@@ -1,1575 +1,758 @@
-import streamlit as st
-import pandas as pd
+import io
 import re
 import unicodedata
 
+import fitz  # PyMuPDF
+import pandas as pd
+import streamlit as st
+
 
 # ============================================================
-# CONFIGURAÇÃO
+# CONFIGURAÇÕES
 # ============================================================
 
 st.set_page_config(
-    page_title="Verifica preenchimento - ALF - Aprova Digital",
-    page_icon="images/favicon.png",
-    layout="wide"
+    page_title="Verifica Cadastro Econômico x Prefeitura",
+    layout="centered",
+    initial_sidebar_state="expanded",
 )
 
+st.sidebar.title("Verificação cadastral")
+st.sidebar.divider()
+st.sidebar.markdown(
+    """
+    **Comparação automática**
+
+    Extrato do Cadastro Econômico × Prefeitura / Alvará
+    """
+)
+
+st.subheader("Verifica Cadastro Econômico × Prefeitura")
+
 
 # ============================================================
-# FUNÇÕES DE NORMALIZAÇÃO
+# FUNÇÕES AUXILIARES
 # ============================================================
 
-def normalizar_texto(valor):
-    """
-    Normaliza texto para comparação:
-    - transforma em string
-    - remove acentos
-    - coloca em maiúsculas
-    - remove pontuação desnecessária
-    - reduz espaços
-    """
-    if valor is None:
+def extrair_texto_pdf(arquivo):
+    """Extrai todo o texto de um PDF."""
+    if arquivo is None:
         return ""
 
-    valor = str(valor).strip().upper()
+    dados = arquivo.read()
+    doc = fitz.open(stream=dados, filetype="pdf")
 
-    valor = unicodedata.normalize("NFKD", valor)
-    valor = "".join(
-        c for c in valor
+    paginas = []
+    for pagina in doc:
+        paginas.append(pagina.get_text())
+
+    return "\n".join(paginas)
+
+
+def normalizar(texto):
+    """
+    Normaliza texto para comparação:
+    - maiúsculas
+    - remove acentos
+    - reduz espaços
+    - remove espaços antes/depois de pontuação
+    """
+    if texto is None:
+        return ""
+
+    texto = str(texto).strip().upper()
+
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(
+        c for c in texto
         if not unicodedata.combining(c)
     )
 
-    valor = re.sub(r"[^\w\s./-]", " ", valor)
-    valor = re.sub(r"\s+", " ", valor)
+    texto = re.sub(r"\s+", " ", texto)
 
-    return valor.strip()
+    texto = re.sub(r"\s*[,;]\s*", ",", texto)
+    texto = re.sub(r"\s*-\s*", "-", texto)
 
-
-def normalizar_numero(valor):
-    if valor is None:
-        return ""
-
-    return re.sub(r"\D", "", str(valor))
+    return texto.strip()
 
 
-def normalizar_cnpj(valor):
-    return normalizar_numero(valor)
+def normalizar_cnpj(texto):
+    numeros = re.sub(r"\D", "", str(texto or ""))
+    return numeros
 
 
-def normalizar_cep(valor):
-    return normalizar_numero(valor)
+def normalizar_numero(texto):
+    numeros = re.sub(r"\D", "", str(texto or ""))
+    return numeros
 
 
-def normalizar_cnae(valor):
-    """
-    Transforma:
-    47.89-0-04
-    4789-0-04
-    4789004
-
-    em uma representação numérica comparável.
-    """
-    if not valor:
-        return ""
-
-    return re.sub(r"\D", "", str(valor))
+def normalizar_cep(texto):
+    numeros = re.sub(r"\D", "", str(texto or ""))
+    return numeros
 
 
-def formatar_cnae(valor):
-    """
-    Formata CNAE para XX.XX-X-XX
-    """
-    numeros = normalizar_cnae(valor)
-
-    if len(numeros) == 7:
-        return (
-            numeros[:2]
-            + "."
-            + numeros[2:4]
-            + "-"
-            + numeros[4]
-            + "-"
-            + numeros[5:]
-        )
-
-    return valor
-
-
-# ============================================================
-# EXTRAÇÃO DE CNPJ
-# ============================================================
-
-def extrair_cnpj(texto):
-
-    padroes = [
-        r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b"
-    ]
-
-    for padrao in padroes:
-
-        resultado = re.search(
-            padrao,
-            texto
-        )
-
-        if resultado:
-            return resultado.group(0)
-
+def extrair_primeiro(padrao, texto, flags=re.IGNORECASE):
+    resultado = re.search(padrao, texto, flags)
+    if resultado:
+        return resultado.group(1).strip()
     return ""
 
 
 # ============================================================
-# EXTRAÇÃO DE CNAEs
+# PARSER - EXTRATO DO CADASTRO ECONÔMICO
 # ============================================================
 
-def extrair_cnaes(texto):
+def extrair_cadastro_economico(texto):
+    """
+    Extrai os campos relevantes do Extrato do Cadastro Econômico.
+    A estrutura foi feita com base no documento fornecido.
+    """
 
-    padrao = r"\b\d{2}\.\d{2}-\d-\d{2}\b"
+    dados = {}
 
-    encontrados = re.findall(
-        padrao,
+    # CNPJ
+    dados["cnpj"] = extrair_primeiro(
+        r"CPF/CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})",
         texto
     )
 
-    resultado = []
-
-    for cnae in encontrados:
-
-        cnae_formatado = formatar_cnae(cnae)
-
-        if cnae_formatado not in resultado:
-            resultado.append(cnae_formatado)
-
-    return resultado
-
-
-# ============================================================
-# EXTRAÇÃO DO CNPJ
-# ============================================================
-
-def extrair_dados_cnpj(texto):
-
-    dados = {
-        "cnpj": "",
-        "razao_social": "",
-        "nome_fantasia": "",
-        "natureza_juridica": "",
-        "logradouro": "",
-        "numero": "",
-        "complemento": "",
-        "bairro": "",
-        "cep": "",
-        "municipio": "",
-        "cnaes": [],
-        "cnae_principal": "",
-    }
-
-    # --------------------------------------------------------
-    # CNPJ
-    # --------------------------------------------------------
-
-    dados["cnpj"] = extrair_cnpj(texto)
-
-    # --------------------------------------------------------
-    # RAZÃO SOCIAL
-    # --------------------------------------------------------
-
-    padroes_razao = [
-        r"RAZÃO SOCIAL\s*[:\-]?\s*(.*?)\s+(?:NOME FANTASIA|TÍTULO DO ESTABELECIMENTO)",
-        r"RAZAO SOCIAL\s*[:\-]?\s*(.*?)\s+(?:NOME FANTASIA|TITULO DO ESTABELECIMENTO)",
-        r"NOME EMPRESARIAL\s*[:\-]?\s*(.*?)\s+(?:NOME FANTASIA|TÍTULO)",
-        r"NOME EMPRESARIAL\s*[:\-]?\s*(.*?)\s+(?:NOME FANTASIA|TITULO)",
-    ]
-
-    for padrao in padroes_razao:
-
-        match = re.search(
-            padrao,
-            texto,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        if match:
-            dados["razao_social"] = match.group(1).strip()
-            break
-
-    # --------------------------------------------------------
-    # NOME FANTASIA
-    # --------------------------------------------------------
-
-    padroes_fantasia = [
-        r"NOME FANTASIA\s*[:\-]?\s*(.*?)\s+(?:SITUAÇÃO|SITUACAO|NATUREZA)",
-        r"TÍTULO DO ESTABELECIMENTO\s*[:\-]?\s*(.*?)\s+(?:SITUAÇÃO|SITUACAO|NATUREZA)",
-        r"TITULO DO ESTABELECIMENTO\s*[:\-]?\s*(.*?)\s+(?:SITUACAO|SITUACAO|NATUREZA)",
-    ]
-
-    for padrao in padroes_fantasia:
-
-        match = re.search(
-            padrao,
-            texto,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        if match:
-            dados["nome_fantasia"] = match.group(1).strip()
-            break
-
-    # --------------------------------------------------------
-    # NATUREZA JURÍDICA
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"NATUREZA JUR[IÍ]DICA\s*[:\-]?\s*(.*?)(?=\n|QUALIFICA|ATIVIDADE)",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        dados["natureza_juridica"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # LOGRADOURO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"LOGRADOURO\s*[:\-]?\s*(.*?)(?=\s+N[ÚU]MERO|\s+COMPLEMENTO|\s+CEP)",
+    # Razão social
+    dados["razao_social"] = extrair_primeiro(
+        r"Nome:\s*\n?\s*(.*?)\s*\n\s*Nome Fantasia:",
         texto,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    if match:
-        dados["logradouro"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # NÚMERO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"N[ÚU]MERO\s*[:\-]?\s*([^\s\n]+)",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        dados["numero"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # COMPLEMENTO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"COMPLEMENTO\s*[:\-]?\s*(.*?)(?=\s+CEP|\s+BAIRRO|\s+MUNIC[IÍ]PIO)",
+    # Nome fantasia
+    dados["nome_fantasia"] = extrair_primeiro(
+        r"Nome Fantasia:\s*\n?\s*(.*?)\s*\n\s*Desc\. Natureza Jurídica:",
         texto,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    if match:
-        dados["complemento"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # CEP
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"CEP\s*[:\-]?\s*(\d{5}-?\d{3})",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        dados["cep"] = match.group(1)
-
-    # --------------------------------------------------------
-    # BAIRRO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"BAIRRO/?DISTRITO\s*[:\-]?\s*(.*?)(?=\s+MUNIC[IÍ]PIO|\s+ENDERE[CÇ]O|\n)",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        dados["bairro"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # MUNICÍPIO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"MUNIC[IÍ]PIO\s*[:\-]?\s*(.*?)(?=\s+UF|\s+CEP|\n)",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        dados["municipio"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # CNAEs
-    # --------------------------------------------------------
-
-    dados["cnaes"] = extrair_cnaes(texto)
-
-    if dados["cnaes"]:
-        dados["cnae_principal"] = dados["cnaes"][0]
-
-    return dados
-
-
-# ============================================================
-# EXTRAÇÃO DO APROVA DIGITAL
-# ============================================================
-
-def extrair_dados_aprova(texto):
-
-    dados = {
-        "cnpj": "",
-        "razao_social": "",
-        "nome_fantasia": "",
-        "natureza_juridica": "",
-        "inscricao_imobiliaria": "",
-        "logradouro": "",
-        "numero": "",
-        "complemento": "",
-        "bairro": "",
-        "cep": "",
-        "cnaes": [],
-        "cnae_principal": "",
-        "zoneamento": "",
-        "classificacao_uso": "",
-        "area": "",
-    }
-
-    # --------------------------------------------------------
-    # CNPJ
-    # --------------------------------------------------------
-
-    dados["cnpj"] = extrair_cnpj(texto)
-
-    # --------------------------------------------------------
-    # RAZÃO SOCIAL
-    # --------------------------------------------------------
-
-    padroes = [
-        r"Raz[aã]o\s+Social\s+(.*?)\s+Nome\s+Fantasia",
-        r"RAZ[AÃ]O\s+SOCIAL\s+(.*?)\s+NOME\s+FANTASIA",
-    ]
-
-    for padrao in padroes:
-
-        match = re.search(
-            padrao,
-            texto,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        if match:
-            dados["razao_social"] = match.group(1).strip()
-            break
-
-    # --------------------------------------------------------
-    # NOME FANTASIA
-    # --------------------------------------------------------
-
-    padroes = [
-        r"Nome\s+Fantasia\s+(.*?)\s+(?:Natureza|REGIN|CNPJ)",
-        r"NOME\s+FANTASIA\s+(.*?)\s+(?:NATUREZA|REGIN|CNPJ)",
-    ]
-
-    for padrao in padroes:
-
-        match = re.search(
-            padrao,
-            texto,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        if match:
-            dados["nome_fantasia"] = match.group(1).strip()
-            break
-
-    # --------------------------------------------------------
-    # NATUREZA JURÍDICA
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"(?:Natureza\s+Jur[ií]dica|NATUREZA\s+JUR[IÍ]DICA)"
-        r"\s*[:\-]?\s*(.*?)(?=\s+(?:CNPJ|REGIN|Bairro|Logradouro)|\n)",
+    # Natureza jurídica
+    dados["natureza_juridica"] = extrair_primeiro(
+        r"Desc\. Natureza Jurídica:\s*\n?\s*(.*?)\s*\n\s*Correio Eletrônico:",
         texto,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    if match:
-        dados["natureza_juridica"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # INSCRIÇÃO IMOBILIÁRIA
-    # --------------------------------------------------------
-
-    padroes = [
-        r"Inscri[cç][aã]o\s+Imobili[aá]ria\s*[:\-]?\s*([^\s\n]+)",
-        r"INSCRI[CÇ][AÃ]O\s+IMOBILI[AÁ]RIA\s*[:\-]?\s*([^\s\n]+)",
-    ]
-
-    for padrao in padroes:
-
-        match = re.search(
-            padrao,
-            texto,
-            flags=re.IGNORECASE
-        )
-
-        if match:
-            dados["inscricao_imobiliaria"] = match.group(1).strip()
-            break
-
-    # --------------------------------------------------------
-    # LOGRADOURO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"Logradouro\s*[:\-]?\s*(.*?)(?=\s+N[uú]mero|\s+Predial|\s+Bairro|\s+CEP|\n)",
+    # Endereço
+    dados["logradouro"] = extrair_primeiro(
+        r"Endereço\s+Logradouro:\s*\n?\s*(.*?)\s*\n\s*Número:",
         texto,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    if match:
-        dados["logradouro"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # NÚMERO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"(?:N[uú]mero|N[uú]mero\s+Predial)\s*[:\-]?\s*([^\s\n]+)",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        dados["numero"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # BAIRRO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"Bairro\s*[:\-]?\s*(.*?)(?=\s+Logradouro|\s+CEP|\s+N[uú]mero|\n)",
+    dados["numero"] = extrair_primeiro(
+        r"Endereço\s+.*?Número:\s*\n?\s*(.*?)\s*\n\s*Bairro:",
         texto,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    if match:
-        dados["bairro"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # CEP
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"CEP\s*[:\-]?\s*(\d{5}-?\d{3})",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        dados["cep"] = match.group(1)
-
-    # --------------------------------------------------------
-    # COMPLEMENTO
-    # --------------------------------------------------------
-
-    complementos = []
-
-    # Sala
-    match = re.search(
-        r"(?:Sala|SALA\))\s*[:\-]?\s*([A-Za-z0-9\-]+)",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        complementos.append("SALA " + match.group(1))
-
-    # Box
-    match = re.search(
-        r"(?:Box|BOX\))\s*[:\-]?\s*([A-Za-z0-9\-]+)",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        complementos.append("BOX " + match.group(1))
-
-    # Lote
-    match = re.search(
-        r"LOTE\s*[:\-]?\s*([A-Za-z0-9\-]+)",
-        texto,
-        flags=re.IGNORECASE
-    )
-
-    if match:
-        complementos.insert(
-            0,
-            "LOTE " + match.group(1)
-        )
-
-    dados["complemento"] = " ".join(complementos)
-
-    # --------------------------------------------------------
-    # CNAEs
-    # --------------------------------------------------------
-
-    dados["cnaes"] = extrair_cnaes(texto)
-
-    if dados["cnaes"]:
-        dados["cnae_principal"] = dados["cnaes"][0]
-
-    # --------------------------------------------------------
-    # ZONEAMENTO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"Zoneamento\s*[:\-]?\s*(.*?)(?=\s+Classifica|\s+Uso|\n)",
+    dados["bairro"] = extrair_primeiro(
+        r"Endereço\s+.*?Bairro:\s*\n?\s*(.*?)\s*\n\s*Complemento:",
         texto,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    if match:
-        dados["zoneamento"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # CLASSIFICAÇÃO DE USO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"(?:Classifica[cç][aã]o\s+de\s+Uso|Classifica[cç][aã]o)\s*"
-        r"[:\-]?\s*(.*?)(?=\n|$)",
+    dados["complemento"] = extrair_primeiro(
+        r"Endereço\s+.*?Complemento:\s*\n?\s*(.*?)\s*\n\s*CEP:",
         texto,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    if match:
-        dados["classificacao_uso"] = match.group(1).strip()
-
-    # --------------------------------------------------------
-    # ÁREA
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"[ÁA]rea\s*[:\-]?\s*([\d.,]+\s*m[²2]?)",
+    dados["cep"] = extrair_primeiro(
+        r"Endereço\s+.*?CEP:\s*\n?\s*(\d{5}[-.]?\d{3})",
         texto,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-    if match:
-        dados["area"] = match.group(1).strip()
+    # Todos os CNAEs do cadastro econômico.
+    # O documento apresenta códigos sem pontuação.
+    dados["cnaes"] = re.findall(
+        r"(?<!\d)(\d{7})(?!\d)",
+        texto
+    )
 
-    return dados
+    # Remove códigos que não são atividades econômicas caso apareçam
+    # em outras partes do documento.
+    inicio = texto.find("Atividade Econômica CNAE")
+    fim = texto.find("Atividade Econômica Atual")
 
-
-# ============================================================
-# COMPARAÇÃO DE CAMPOS
-# ============================================================
-
-def comparar_valores(
-    campo,
-    aprova,
-    cnpj,
-    tipo="texto"
-):
-
-    if not str(aprova).strip() or not str(cnpj).strip():
-
-        return {
-            "Campo": campo,
-            "Aprova Digital": aprova,
-            "CNPJ": cnpj,
-            "Resultado": "NÃO LOCALIZADO",
-            "Observação": "Informação ausente em uma das fontes."
-        }
-
-    # --------------------------------------------------------
-    # CNPJ
-    # --------------------------------------------------------
-
-    if tipo == "cnpj":
-
-        a = normalizar_cnpj(aprova)
-        b = normalizar_cnpj(cnpj)
-
-        if a == b:
-
-            return {
-                "Campo": campo,
-                "Aprova Digital": aprova,
-                "CNPJ": cnpj,
-                "Resultado": "OK",
-                "Observação": ""
-            }
-
-        return {
-            "Campo": campo,
-            "Aprova Digital": aprova,
-            "CNPJ": cnpj,
-            "Resultado": "VERIFICAR",
-            "Observação": "CNPJ divergente."
-        }
-
-    # --------------------------------------------------------
-    # NÚMERO
-    # --------------------------------------------------------
-
-    if tipo == "numero":
-
-        a = normalizar_numero(aprova)
-        b = normalizar_numero(cnpj)
-
-        if a == b:
-
-            return {
-                "Campo": campo,
-                "Aprova Digital": aprova,
-                "CNPJ": cnpj,
-                "Resultado": "OK",
-                "Observação": ""
-            }
-
-        return {
-            "Campo": campo,
-            "Aprova Digital": aprova,
-            "CNPJ": cnpj,
-            "Resultado": "VERIFICAR",
-            "Observação": "Número divergente."
-        }
-
-    # --------------------------------------------------------
-    # CEP
-    # --------------------------------------------------------
-
-    if tipo == "cep":
-
-        a = normalizar_cep(aprova)
-        b = normalizar_cep(cnpj)
-
-        if a == b:
-
-            return {
-                "Campo": campo,
-                "Aprova Digital": aprova,
-                "CNPJ": cnpj,
-                "Resultado": "OK",
-                "Observação": ""
-            }
-
-        return {
-            "Campo": campo,
-            "Aprova Digital": aprova,
-            "CNPJ": cnpj,
-            "Resultado": "VERIFICAR",
-            "Observação": "CEP divergente."
-        }
-
-    # --------------------------------------------------------
-    # TEXTO
-    # --------------------------------------------------------
-
-    a = normalizar_texto(aprova)
-    b = normalizar_texto(cnpj)
-
-    if a == b:
-
-        return {
-            "Campo": campo,
-            "Aprova Digital": aprova,
-            "CNPJ": cnpj,
-            "Resultado": "OK",
-            "Observação": ""
-        }
-
-    # --------------------------------------------------------
-    # DIFERENÇA DE FORMATAÇÃO
-    # --------------------------------------------------------
-
-    if tipo == "endereco":
-
-        # Remove prefixos comuns
-        prefixos = [
-            "RUA ",
-            "AV ",
-            "AVENIDA ",
-            "RODOVIA ",
-            "ESTRADA ",
-            "TRAVESSA ",
-            "ALAMEDA "
+    if inicio >= 0:
+        bloco_cnaes = texto[
+            inicio:fim if fim > inicio else len(texto)
         ]
 
-        aa = a
-        bb = b
+        dados["cnaes"] = re.findall(
+            r"(?<!\d)(\d{7})(?!\d)",
+            bloco_cnaes
+        )
 
-        for prefixo in prefixos:
+    dados["cnaes"] = list(dict.fromkeys(dados["cnaes"]))
 
-            aa = aa.replace(prefixo, "")
-            bb = bb.replace(prefixo, "")
+    # Situação
+    dados["situacao"] = extrair_primeiro(
+        r"Nº CMC:\s*Situação:\s*\n?\s*(.*?)\s*\n\s*Horário Funcionamento:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
+    )
 
-        if aa == bb:
+    # Inscrição municipal
+    dados["inscricao_municipal"] = ""
 
-            return {
-                "Campo": campo,
-                "Aprova Digital": aprova,
-                "CNPJ": cnpj,
-                "Resultado": "ATENÇÃO",
-                "Observação": "Diferença apenas na forma de apresentação."
-            }
+    # No documento, o número aparece associado à inscrição municipal,
+    # mas a extração textual pode não preservar a posição visual.
+    # Mantemos vazio quando não houver marcador inequívoco.
 
-    return {
-        "Campo": campo,
-        "Aprova Digital": aprova,
-        "CNPJ": cnpj,
-        "Resultado": "VERIFICAR",
-        "Observação": "Informações diferentes."
-    }
+    return dados
 
 
 # ============================================================
-# COMPARAÇÃO DOS CNAEs
+# PARSER - PREFEITURA / ALVARÁ
 # ============================================================
 
-def comparar_cnaes(cnaes_aprova, cnaes_cnpj):
+def extrair_prefeitura(texto):
+    """
+    Extrai os campos relevantes do PDF da Prefeitura.
+    """
 
-    aprova = {
-        normalizar_cnae(cnae)
-        for cnae in cnaes_aprova
-    }
+    dados = {}
 
-    cnpj = {
-        normalizar_cnae(cnae)
-        for cnae in cnaes_cnpj
-    }
-
-    if aprova == cnpj:
-
-        return {
-            "Campo": "CNAEs",
-            "Aprova Digital": ", ".join(cnaes_aprova),
-            "CNPJ": ", ".join(cnaes_cnpj),
-            "Resultado": "OK",
-            "Observação": "Todos os CNAEs são compatíveis."
-        }
-
-    if aprova and cnpj:
-
-        somente_aprova = aprova - cnpj
-        somente_cnpj = cnpj - aprova
-
-        observacao = []
-
-        if somente_aprova:
-            observacao.append(
-                "Somente Aprova: "
-                + ", ".join(
-                    formatar_cnae(x)
-                    for x in somente_aprova
-                )
-            )
-
-        if somente_cnpj:
-            observacao.append(
-                "Somente CNPJ: "
-                + ", ".join(
-                    formatar_cnae(x)
-                    for x in somente_cnpj
-                )
-            )
-
-        return {
-            "Campo": "CNAEs",
-            "Aprova Digital": ", ".join(cnaes_aprova),
-            "CNPJ": ", ".join(cnaes_cnpj),
-            "Resultado": "VERIFICAR",
-            "Observação": " | ".join(observacao)
-        }
-
-    return {
-        "Campo": "CNAEs",
-        "Aprova Digital": ", ".join(cnaes_aprova),
-        "CNPJ": ", ".join(cnaes_cnpj),
-        "Resultado": "NÃO LOCALIZADO",
-        "Observação": "Não foi possível localizar todos os CNAEs."
-    }
-
-
-# ============================================================
-# LIMPAR
-# ============================================================
-
-def limpar_campos():
-
-    st.session_state["texto_aprova"] = ""
-    st.session_state["texto_cnpj"] = ""
-    st.session_state["analisar"] = False
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-with st.sidebar:
-
-    st.title("Links úteis")
-
-    st.page_link(
-        "app.py",
-        label="Início"
+    dados["protocolo"] = extrair_primeiro(
+        r"Protocolo:\s*(\d+)",
+        texto
     )
 
-    st.page_link(
-        "pages/cv_zona.py",
-        label="CV Zona"
+    dados["data_protocolo"] = extrair_primeiro(
+        r"Data do Protocolo:\s*(\d{2}/\d{2}/\d{4})",
+        texto
     )
 
-    st.page_link(
-        "pages/documentacao-complementar-ALF.py",
-        label="Documentação Complementar - ALF"
+    dados["acao"] = extrair_primeiro(
+        r"Ação:\s*(.*?)\s*\n\s*Situação do Protocolo:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-    st.page_link(
-        "pages/estudo-de-impacto-de-vizinhanca.py",
-        label="Estudo de Impacto de Vizinhança"
+    dados["natureza_juridica"] = extrair_primeiro(
+        r"Natureza Jurídica:\s*(.*?)\s*\n\s*Nome Empresarial:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-    st.page_link(
-        "pages/links.py",
-        label="Links"
+    dados["razao_social"] = extrair_primeiro(
+        r"Nome Empresarial:\s*(.*?)\s*\n\s*Nome Fantasia:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-    st.page_link(
-        "pages/verifica_aprova.py",
-        label="Verifica Aprova"
+    dados["nome_fantasia"] = extrair_primeiro(
+        r"Nome Fantasia:\s*(.*?)\s*\n\s*Capital Social:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-
-# ============================================================
-# INICIALIZA SESSION STATE
-# ============================================================
-
-if "texto_aprova" not in st.session_state:
-    st.session_state["texto_aprova"] = ""
-
-if "texto_cnpj" not in st.session_state:
-    st.session_state["texto_cnpj"] = ""
-
-if "analisar" not in st.session_state:
-    st.session_state["analisar"] = False
-
-
-# ============================================================
-# TÍTULO
-# ============================================================
-
-st.title(
-    "Verifica preenchimento - ALF - Aprova Digital"
-)
-
-st.write(
-    "Cole os dados do processo do Aprova Digital e do CNPJ "
-    "para realizar a conferência automática."
-)
-
-
-# ============================================================
-# INPUTS
-# ============================================================
-
-col1, col2 = st.columns(2)
-
-with col1:
-
-    st.subheader("📄 Aprova Digital")
-
-    st.text_area(
-        "Cole todo o texto da página do processo:",
-        key="texto_aprova",
-        height=400,
-        placeholder="Cole aqui o texto copiado do Aprova Digital..."
+    dados["capital_social"] = extrair_primeiro(
+        r"Capital Social:\s*(.*?)\s*\n\s*Tipo de Estabelecimento:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-
-with col2:
-
-    st.subheader("🏢 CNPJ")
-
-    st.text_area(
-        "Cole todo o texto do CNPJ:",
-        key="texto_cnpj",
-        height=400,
-        placeholder="Cole aqui o texto do CNPJ..."
+    dados["cnpj"] = extrair_primeiro(
+        r"CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})",
+        texto
     )
 
-
-# ============================================================
-# BOTÕES
-# ============================================================
-
-col_btn1, col_btn2, col_btn3 = st.columns(
-    [1, 1, 4]
-)
-
-with col_btn1:
-
-    st.button(
-        "🗑️ Limpar",
-        on_click=limpar_campos,
-        use_container_width=True
+    dados["logradouro"] = extrair_primeiro(
+        r"Logradouro:\s*(.*?)\s*\n\s*Nº",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-
-with col_btn2:
-
-    if st.button(
-        "🔎 Analisar",
-        type="primary",
-        use_container_width=True
-    ):
-        st.session_state["analisar"] = True
-
-
-# ============================================================
-# RECUPERA TEXTO
-# ============================================================
-
-texto_aprova = st.session_state.get(
-    "texto_aprova",
-    ""
-)
-
-texto_cnpj = st.session_state.get(
-    "texto_cnpj",
-    "")
-
-
-# ============================================================
-# VALIDAÇÃO
-# ============================================================
-
-if not st.session_state.get("analisar", False):
-
-    st.info(
-        "Cole os dois documentos e clique em **Analisar**."
+    dados["numero"] = extrair_primeiro(
+        r"Nº\s*(\d+)",
+        texto
     )
 
-    st.stop()
-
-
-if not texto_aprova.strip():
-
-    st.warning(
-        "⚠️ O texto do Aprova Digital não foi preenchido."
+    dados["complemento"] = extrair_primeiro(
+        r"Complemento:\s*(.*?)\s*\n\s*Referência:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-    st.stop()
-
-
-if not texto_cnpj.strip():
-
-    st.warning(
-        "⚠️ O texto do CNPJ não foi preenchido."
+    dados["bairro"] = extrair_primeiro(
+        r"Bairro:\s*(.*?)\s*\n\s*Município:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-    st.stop()
-
-
-# ============================================================
-# EXTRAÇÃO
-# ============================================================
-
-try:
-
-    dados_aprova = extrair_dados_aprova(
-        texto_aprova
+    dados["municipio"] = extrair_primeiro(
+        r"Município:\s*(.*?)\s*\n\s*Estado:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-    dados_cnpj = extrair_dados_cnpj(
-        texto_cnpj
+    dados["estado"] = extrair_primeiro(
+        r"Estado:\s*(.*?)\s*\n\s*CEP:",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-except Exception as erro:
-
-    st.error(
-        "Ocorreu um erro durante a leitura dos documentos."
+    dados["cep"] = extrair_primeiro(
+        r"CEP:\s*(\d{2}\.?\d{3}[-.]?\d{3})",
+        texto
     )
 
-    st.exception(erro)
-
-    st.stop()
-
-
-# ============================================================
-# RESUMO DA EXTRAÇÃO
-# ============================================================
-
-st.markdown("---")
-
-st.subheader("📊 Dados identificados")
-
-col1, col2 = st.columns(2)
-
-with col1:
-
-    st.markdown("### Aprova Digital")
-
-    st.write(
-        "**CNPJ:**",
-        dados_aprova["cnpj"] or "Não localizado"
+    dados["area_construida"] = extrair_primeiro(
+        r"Área Construída\(m2\):\s*(.*?)\s*\n",
+        texto,
+        flags=re.IGNORECASE
     )
 
-    st.write(
-        "**Razão Social:**",
-        dados_aprova["razao_social"] or "Não localizada"
+    dados["evento"] = extrair_primeiro(
+        r"Eventos:\s*(.*?)(?:\nCNPJ:)",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
     )
 
-    st.write(
-        "**Nome Fantasia:**",
-        dados_aprova["nome_fantasia"] or "Não localizado"
-    )
-
-    st.write(
-        "**Inscrição Imobiliária:**",
-        dados_aprova["inscricao_imobiliaria"] or "Não localizada"
-    )
-
-with col2:
-
-    st.markdown("### CNPJ")
-
-    st.write(
-        "**CNPJ:**",
-        dados_cnpj["cnpj"] or "Não localizado"
-    )
-
-    st.write(
-        "**Razão Social:**",
-        dados_cnpj["razao_social"] or "Não localizada"
-    )
-
-    st.write(
-        "**Nome Fantasia:**",
-        dados_cnpj["nome_fantasia"] or "Não localizado"
-    )
-
-    st.write(
-        "**Natureza Jurídica:**",
-        dados_cnpj["natureza_juridica"] or "Não localizada"
-    )
+    return dados
 
 
 # ============================================================
 # COMPARAÇÕES
 # ============================================================
 
-resultados = []
+def comparar_exato(campo, descricao, cadastro, prefeitura):
+    valor1 = cadastro.get(campo, "")
+    valor2 = prefeitura.get(campo, "")
 
+    n1 = normalizar(valor1)
+    n2 = normalizar(valor2)
 
-# ------------------------------------------------------------
-# CNPJ
-# ------------------------------------------------------------
+    if not n1 or not n2:
+        return {
+            "Item": descricao,
+            "Cadastro Econômico": valor1 or "Não localizado",
+            "Prefeitura": valor2 or "Não localizado",
+            "Status": "⚪ NÃO LOCALIZADO"
+        }
 
-resultados.append(
-    comparar_valores(
-        "CNPJ",
-        dados_aprova["cnpj"],
-        dados_cnpj["cnpj"],
-        "cnpj"
-    )
-)
+    if n1 == n2:
+        status = "🟢 OK"
+    else:
+        status = "🔴 VERIFICAR"
 
-
-# ------------------------------------------------------------
-# RAZÃO SOCIAL
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_valores(
-        "Razão Social",
-        dados_aprova["razao_social"],
-        dados_cnpj["razao_social"]
-    )
-)
-
-
-# ------------------------------------------------------------
-# NOME FANTASIA
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_valores(
-        "Nome Fantasia",
-        dados_aprova["nome_fantasia"],
-        dados_cnpj["nome_fantasia"]
-    )
-)
-
-
-# ------------------------------------------------------------
-# NATUREZA JURÍDICA
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_valores(
-        "Natureza Jurídica",
-        dados_aprova["natureza_juridica"],
-        dados_cnpj["natureza_juridica"]
-    )
-)
-
-
-# ------------------------------------------------------------
-# LOGRADOURO
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_valores(
-        "Logradouro",
-        dados_aprova["logradouro"],
-        dados_cnpj["logradouro"],
-        "endereco"
-    )
-)
-
-
-# ------------------------------------------------------------
-# NÚMERO
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_valores(
-        "Número",
-        dados_aprova["numero"],
-        dados_cnpj["numero"],
-        "numero"
-    )
-)
-
-
-# ------------------------------------------------------------
-# COMPLEMENTO
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_valores(
-        "Complemento",
-        dados_aprova["complemento"],
-        dados_cnpj["complemento"],
-        "endereco"
-    )
-)
-
-
-# ------------------------------------------------------------
-# BAIRRO
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_valores(
-        "Bairro",
-        dados_aprova["bairro"],
-        dados_cnpj["bairro"],
-        "endereco"
-    )
-)
-
-
-# ------------------------------------------------------------
-# CEP
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_valores(
-        "CEP",
-        dados_aprova["cep"],
-        dados_cnpj["cep"],
-        "cep"
-    )
-)
-
-
-# ------------------------------------------------------------
-# CNAEs
-# ------------------------------------------------------------
-
-resultados.append(
-    comparar_cnaes(
-        dados_aprova["cnaes"],
-        dados_cnpj["cnaes"]
-    )
-)
-
-
-# ------------------------------------------------------------
-# INSCRIÇÃO IMOBILIÁRIA
-# ------------------------------------------------------------
-
-resultados.append(
-    {
-        "Campo": "Inscrição Imobiliária",
-        "Aprova Digital": dados_aprova["inscricao_imobiliaria"],
-        "CNPJ": "Não se aplica",
-        "Resultado": "OK"
-        if dados_aprova["inscricao_imobiliaria"]
-        else "NÃO LOCALIZADO",
-        "Observação":
-            ""
-            if dados_aprova["inscricao_imobiliaria"]
-            else "Não localizada no Aprova Digital."
+    return {
+        "Item": descricao,
+        "Cadastro Econômico": valor1,
+        "Prefeitura": valor2,
+        "Status": status
     }
-)
 
 
-# ------------------------------------------------------------
-# ZONEAMENTO
-# ------------------------------------------------------------
+def comparar_cnpj(cadastro, prefeitura):
+    v1 = normalizar_cnpj(cadastro.get("cnpj"))
+    v2 = normalizar_cnpj(prefeitura.get("cnpj"))
 
-resultados.append(
-    {
-        "Campo": "Zoneamento",
-        "Aprova Digital": dados_aprova["zoneamento"],
-        "CNPJ": "Não se aplica",
-        "Resultado": "OK"
-        if dados_aprova["zoneamento"]
-        else "NÃO LOCALIZADO",
-        "Observação":
-            ""
-            if dados_aprova["zoneamento"]
-            else "Zoneamento não localizado."
+    if not v1 or not v2:
+        status = "⚪ NÃO LOCALIZADO"
+    elif v1 == v2:
+        status = "🟢 OK"
+    else:
+        status = "🔴 VERIFICAR"
+
+    return {
+        "Item": "CNPJ",
+        "Cadastro Econômico": cadastro.get("cnpj", "") or "Não localizado",
+        "Prefeitura": prefeitura.get("cnpj", "") or "Não localizado",
+        "Status": status
     }
-)
 
 
-# ------------------------------------------------------------
-# CLASSIFICAÇÃO DE USO
-# ------------------------------------------------------------
+def comparar_numero(cadastro, prefeitura):
+    v1 = normalizar_numero(cadastro.get("numero"))
+    v2 = normalizar_numero(prefeitura.get("numero"))
 
-resultados.append(
-    {
-        "Campo": "Classificação de Uso",
-        "Aprova Digital": dados_aprova["classificacao_uso"],
-        "CNPJ": "Não se aplica",
-        "Resultado": "OK"
-        if dados_aprova["classificacao_uso"]
-        else "NÃO LOCALIZADO",
-        "Observação":
-            ""
-            if dados_aprova["classificacao_uso"]
-            else "Classificação de uso não localizada."
+    if not v1 or not v2:
+        status = "⚪ NÃO LOCALIZADO"
+    elif v1 == v2:
+        status = "🟢 OK"
+    else:
+        status = "🔴 VERIFICAR"
+
+    return {
+        "Item": "Número",
+        "Cadastro Econômico": cadastro.get("numero", "") or "Não localizado",
+        "Prefeitura": prefeitura.get("numero", "") or "Não localizado",
+        "Status": status
     }
-)
 
 
-# ------------------------------------------------------------
-# ÁREA
-# ------------------------------------------------------------
+def comparar_cep(cadastro, prefeitura):
+    v1 = normalizar_cep(cadastro.get("cep"))
+    v2 = normalizar_cep(prefeitura.get("cep"))
 
-resultados.append(
-    {
-        "Campo": "Área",
-        "Aprova Digital": dados_aprova["area"],
-        "CNPJ": "Não se aplica",
-        "Resultado": "OK"
-        if dados_aprova["area"]
-        else "NÃO LOCALIZADO",
-        "Observação":
-            ""
-            if dados_aprova["area"]
-            else "Área não localizada."
+    if not v1 or not v2:
+        status = "⚪ NÃO LOCALIZADO"
+    elif v1 == v2:
+        status = "🟢 OK"
+    else:
+        status = "🔴 VERIFICAR"
+
+    return {
+        "Item": "CEP",
+        "Cadastro Econômico": cadastro.get("cep", "") or "Não localizado",
+        "Prefeitura": prefeitura.get("cep", "") or "Não localizado",
+        "Status": status
     }
-)
 
 
-# ============================================================
-# DATAFRAME
-# ============================================================
+def comparar_natureza(cadastro, prefeitura):
+    """
+    Trata como equivalentes formatos como:
+    205-4 Sociedade Anônima Fechada
+    2054 - Sociedade Anônima Fechada
+    """
+    v1 = normalizar(cadastro.get("natureza_juridica"))
+    v2 = normalizar(prefeitura.get("natureza_juridica"))
 
-df_resultados = pd.DataFrame(
-    resultados
-)
+    if not v1 or not v2:
+        status = "⚪ NÃO LOCALIZADO"
+    else:
+        codigo1 = re.search(r"\b(\d{3})[- ]?(\d)\b", v1)
+        codigo2 = re.search(r"\b(\d{4})\b", v2)
+
+        nome1 = re.sub(r"[^A-Z ]", " ", v1)
+        nome2 = re.sub(r"[^A-Z ]", " ", v2)
+
+        nome1 = re.sub(r"\s+", " ", nome1).strip()
+        nome2 = re.sub(r"\s+", " ", nome2).strip()
+
+        equivalente = False
+
+        if codigo1 and codigo2:
+            codigo_cadastro = codigo1.group(1) + codigo1.group(2)
+            codigo_prefeitura = codigo2.group(1)
+
+            if codigo_cadastro == codigo_prefeitura:
+                equivalente = True
+
+        if (
+            "SOCIEDADE ANONIMA FECHADA" in nome1
+            and "SOCIEDADE ANONIMA FECHADA" in nome2
+        ):
+            equivalente = True
+
+        status = "🟢 OK" if equivalente else "🔴 VERIFICAR"
+
+    return {
+        "Item": "Natureza jurídica",
+        "Cadastro Econômico": cadastro.get("natureza_juridica", "") or "Não localizado",
+        "Prefeitura": prefeitura.get("natureza_juridica", "") or "Não localizado",
+        "Status": status
+    }
 
 
-# ============================================================
-# FUNÇÃO DE COR
-# ============================================================
-
-def cor_linha(resultado):
-
-    resultado = str(resultado).upper()
-
-    if resultado == "OK":
-        return (
-            "background-color: #d4edda;"
-            "color: #155724;"
-        )
-
-    if "ATENÇÃO" in resultado:
-        return (
-            "background-color: #fff3cd;"
-            "color: #856404;"
-        )
-
-    if "VERIFICAR" in resultado:
-        return (
-            "background-color: #f8d7da;"
-            "color: #721c24;"
-        )
-
-    if "NÃO LOCALIZADO" in resultado:
-        return (
-            "background-color: #e2e3e5;"
-            "color: #383d41;"
-        )
-
-    return ""
-
-
-def aplicar_cor(row):
-
-    cor = cor_linha(
-        row["Resultado"]
-    )
-
-    return [
-        cor
-        for _ in row
+def comparar_endereco(cadastro, prefeitura):
+    campos = [
+        ("logradouro", "Logradouro"),
+        ("numero", "Número"),
+        ("bairro", "Bairro"),
+        ("complemento", "Complemento"),
+        ("cep", "CEP"),
     ]
 
+    resultados = []
+
+    for campo, descricao in campos:
+        if campo == "numero":
+            resultados.append(comparar_numero(cadastro, prefeitura))
+        elif campo == "cep":
+            resultados.append(comparar_cep(cadastro, prefeitura))
+        else:
+            resultados.append(
+                comparar_exato(
+                    campo,
+                    descricao,
+                    cadastro,
+                    prefeitura
+                )
+            )
+
+    return resultados
+
+
+def comparar_cnaes(cadastro, prefeitura):
+    """
+    O documento da Prefeitura fornecido não apresenta a relação
+    de CNAEs. Portanto, não se faz uma comparação artificial.
+    """
+    cnaes = cadastro.get("cnaes", [])
+
+    if cnaes:
+        texto_cadastro = ", ".join(cnaes)
+    else:
+        texto_cadastro = "Não localizado"
+
+    return {
+        "Item": "CNAEs",
+        "Cadastro Econômico": texto_cadastro,
+        "Prefeitura": "Não informado no documento",
+        "Status": "🟡 CONFERÊNCIA MANUAL"
+    }
+
 
 # ============================================================
-# TABELA DE COMPARAÇÃO
+# TABELA VISUAL
 # ============================================================
 
-st.markdown("---")
+def tabela_colorida(df):
+    def cor_linha(row):
+        status = row["Status"]
 
-st.subheader(
-    "🔍 Comparação Aprova Digital × CNPJ"
-)
+        if "🟢" in status:
+            cor = "#d9ead3"
+        elif "🔴" in status:
+            cor = "#f4cccc"
+        elif "🟡" in status:
+            cor = "#fff2cc"
+        else:
+            cor = "#eeeeee"
 
-st.dataframe(
-    df_resultados.style.apply(
-        aplicar_cor,
-        axis=1
-    ),
-    use_container_width=True,
-    hide_index=True
-)
+        return [f"background-color: {cor}"] * len(row)
+
+    return df.style.apply(cor_linha, axis=1)
 
 
 # ============================================================
 # CHECKLIST
 # ============================================================
 
-st.markdown("---")
+def checklist_final(df):
+    st.subheader("Checklist Final")
 
-st.subheader(
-    "📋 Checklist Final"
-)
-
-
-# Contagens
-
-total = len(df_resultados)
-
-qtd_ok = sum(
-    df_resultados["Resultado"]
-    .astype(str)
-    .str.upper()
-    .eq("OK")
-)
-
-qtd_atencao = sum(
-    df_resultados["Resultado"]
-    .astype(str)
-    .str.upper()
-    .str.contains("ATENÇÃO|ATENCAO", regex=True)
-)
-
-qtd_verificar = sum(
-    df_resultados["Resultado"]
-    .astype(str)
-    .str.upper()
-    .str.contains(
-        "VERIFICAR|DIVERGÊNCIA|DIVERGENCIA",
-        regex=True
-    )
-)
-
-qtd_nao_localizado = sum(
-    df_resultados["Resultado"]
-    .astype(str)
-    .str.upper()
-    .str.contains(
-        "NÃO LOCALIZADO|NAO LOCALIZADO",
-        regex=True
-    )
-)
-
-
-# ============================================================
-# INDICADORES
-# ============================================================
-
-c1, c2, c3, c4 = st.columns(4)
-
-with c1:
-
-    st.metric(
-        "🟢 OK",
-        qtd_ok
+    qtd_ok = int(df["Status"].str.contains("🟢").sum())
+    qtd_atencao = int(df["Status"].str.contains("🟡").sum())
+    qtd_verificar = int(df["Status"].str.contains("🔴").sum())
+    qtd_nao_localizado = int(
+        df["Status"].str.contains("⚪").sum()
     )
 
-with c2:
+    st.markdown(f"🟢 **OK:** {qtd_ok}")
+    st.markdown(f"🟡 **Conferência manual:** {qtd_atencao}")
+    st.markdown(f"🔴 **Verificar:** {qtd_verificar}")
+    st.markdown(f"⚪ **Não localizado:** {qtd_nao_localizado}")
 
-    st.metric(
-        "🟡 Atenção",
-        qtd_atencao
-    )
+    st.divider()
 
-with c3:
+    itens_verificar = df[
+        df["Status"].str.contains("🔴|🟡|⚪", regex=True)
+    ]
 
-    st.metric(
-        "🔴 Verificar",
-        qtd_verificar
-    )
-
-with c4:
-
-    st.metric(
-        "⚪ Não localizado",
-        qtd_nao_localizado
-    )
-
-
-# ============================================================
-# CHECKLIST ITEM A ITEM
-# ============================================================
-
-st.markdown(
-    "### Conferência campo a campo"
-)
-
-for _, linha in df_resultados.iterrows():
-
-    campo = linha["Campo"]
-    resultado = str(
-        linha["Resultado"]
-    ).upper()
-
-    observacao = str(
-        linha.get("Observação", "")
-    )
-
-    if resultado == "OK":
-
-        st.success(
-            f"✅ **{campo}** — OK"
+    if itens_verificar.empty:
+        st.success("Todos os itens automáticos foram conferidos.")
+    else:
+        st.warning(
+            "Antes de concluir o processo, confira os itens abaixo:"
         )
 
-    elif "ATENÇÃO" in resultado:
-
-        mensagem = (
-            f"⚠️ **{campo}** — Atenção"
-        )
-
-        if observacao:
-            mensagem += f" — {observacao}"
-
-        st.warning(mensagem)
-
-    elif "VERIFICAR" in resultado:
-
-        mensagem = (
-            f"❌ **{campo}** — Verificar"
-        )
-
-        if observacao:
-            mensagem += f" — {observacao}"
-
-        st.error(mensagem)
-
-    elif "NÃO LOCALIZADO" in resultado:
-
-        mensagem = (
-            f"⚪ **{campo}** — Não localizado"
-        )
-
-        if observacao:
-            mensagem += f" — {observacao}"
-
-        st.info(mensagem)
+        for _, linha in itens_verificar.iterrows():
+            st.markdown(
+                f"- **{linha['Item']}** — {linha['Status']}"
+            )
 
 
 # ============================================================
-# RESULTADO FINAL
+# INTERFACE
 # ============================================================
-
-st.markdown("---")
-
-st.subheader(
-    "🚦 Resultado Final da Conferência"
-)
-
-
-if qtd_verificar > 0:
-
-    st.error(
-        f"🔴 **VERIFICAR DOCUMENTAÇÃO**\n\n"
-        f"Foram identificadas **{qtd_verificar} "
-        f"divergência(s)** que precisam ser conferidas."
-    )
-
-elif qtd_nao_localizado > 0:
-
-    st.warning(
-        f"🟡 **CONFERÊNCIA INCOMPLETA**\n\n"
-        f"{qtd_nao_localizado} campo(s) "
-        f"não foram localizados."
-    )
-
-elif qtd_atencao > 0:
-
-    st.warning(
-        f"🟡 **CONFERÊNCIA COM ATENÇÕES**\n\n"
-        f"Não foram encontradas divergências diretas, "
-        f"mas existem {qtd_atencao} diferença(s) "
-        f"de apresentação/formatação."
-    )
-
-else:
-
-    st.success(
-        "🟢 **CONFERÊNCIA CONCLUÍDA**\n\n"
-        "Todos os campos analisados estão compatíveis."
-    )
-
-
-# ============================================================
-# LEGENDA
-# ============================================================
-
-st.markdown("---")
 
 st.markdown(
     """
-### Legenda
-
-🟢 **OK** — informações compatíveis.
-
-🟡 **ATENÇÃO** — diferença de apresentação/formatação
-que merece conferência, mas não necessariamente representa
-uma divergência cadastral.
-
-🔴 **VERIFICAR** — informações efetivamente diferentes.
-
-⚪ **NÃO LOCALIZADO** — informação não encontrada
-na fonte analisada.
-"""
+    Faça o upload dos dois documentos que serão comparados.
+    """
 )
+
+col1, col2 = st.columns(2)
+
+with col1:
+    arquivo_cadastro = st.file_uploader(
+        "Extrato do Cadastro Econômico",
+        type=["pdf"],
+        key="arquivo_cadastro"
+    )
+
+with col2:
+    arquivo_prefeitura = st.file_uploader(
+        "Documento da Prefeitura / Alvará",
+        type=["pdf"],
+        key="arquivo_prefeitura"
+    )
+
+
+if st.button("Limpar"):
+    st.rerun()
+
+
+if arquivo_cadastro and arquivo_prefeitura:
+
+    try:
+        texto_cadastro = extrair_texto_pdf(arquivo_cadastro)
+        texto_prefeitura = extrair_texto_pdf(arquivo_prefeitura)
+
+        cadastro = extrair_cadastro_economico(texto_cadastro)
+        prefeitura = extrair_prefeitura(texto_prefeitura)
+
+        # ----------------------------------------------------
+        # RESUMO
+        # ----------------------------------------------------
+
+        st.divider()
+        st.subheader("Resumo da análise")
+
+        st.markdown(
+            f"**Empresa:** {cadastro.get('razao_social', 'Não localizado')}"
+        )
+
+        st.markdown(
+            f"**CNPJ:** {cadastro.get('cnpj', 'Não localizado')}"
+        )
+
+        st.markdown(
+            f"**Protocolo Prefeitura:** "
+            f"{prefeitura.get('protocolo', 'Não localizado')}"
+        )
+
+        st.markdown(
+            f"**Ação:** "
+            f"{prefeitura.get('acao', 'Não localizado')}"
+        )
+
+        # ----------------------------------------------------
+        # COMPARAÇÃO
+        # ----------------------------------------------------
+
+        resultados = []
+
+        resultados.append(
+            comparar_cnpj(cadastro, prefeitura)
+        )
+
+        resultados.append(
+            comparar_exato(
+                "razao_social",
+                "Razão social / Nome empresarial",
+                cadastro,
+                prefeitura
+            )
+        )
+
+        resultados.append(
+            comparar_exato(
+                "nome_fantasia",
+                "Nome fantasia",
+                cadastro,
+                prefeitura
+            )
+        )
+
+        resultados.append(
+            comparar_natureza(cadastro, prefeitura)
+        )
+
+        resultados.extend(
+            comparar_endereco(cadastro, prefeitura)
+        )
+
+        resultados.append(
+            comparar_cnaes(cadastro, prefeitura)
+        )
+
+        df = pd.DataFrame(resultados)
+
+        # ----------------------------------------------------
+        # TABELA
+        # ----------------------------------------------------
+
+        st.divider()
+        st.subheader("Tabela de conferência")
+
+        st.dataframe(
+            tabela_colorida(df),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # ----------------------------------------------------
+        # DETALHAMENTO
+        # ----------------------------------------------------
+
+        st.divider()
+        st.subheader("Endereço")
+
+        st.markdown(
+            "**Cadastro Econômico:** "
+            + ", ".join(
+                filter(
+                    None,
+                    [
+                        cadastro.get("logradouro"),
+                        cadastro.get("numero"),
+                        cadastro.get("bairro"),
+                        cadastro.get("complemento"),
+                        cadastro.get("cep"),
+                    ]
+                )
+            )
+        )
+
+        st.markdown(
+            "**Prefeitura:** "
+            + ", ".join(
+                filter(
+                    None,
+                    [
+                        prefeitura.get("logradouro"),
+                        prefeitura.get("numero"),
+                        prefeitura.get("bairro"),
+                        prefeitura.get("complemento"),
+                        prefeitura.get("cep"),
+                    ]
+                )
+            )
+        )
+
+        st.divider()
+        st.subheader("CNAEs do Cadastro Econômico")
+
+        if cadastro.get("cnaes"):
+            tabela_cnaes = pd.DataFrame(
+                {"CNAE": cadastro["cnaes"]}
+            )
+            st.dataframe(
+                tabela_cnaes,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("Nenhum CNAE localizado.")
+
+        # ----------------------------------------------------
+        # CHECKLIST
+        # ----------------------------------------------------
+
+        checklist_final(df)
+
+    except Exception as erro:
+        st.error(
+            "Não foi possível concluir a análise automática."
+        )
+
+        with st.expander("Detalhes técnicos"):
+            st.exception(erro)
+
+else:
+    st.info(
+        "Envie os dois PDFs para iniciar a análise."
+    )
