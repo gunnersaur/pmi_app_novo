@@ -4,161 +4,135 @@ import re
 
 # Configurações do Streamlit
 st.set_page_config(
-    page_title='Verifica preenchimento - JUCESC vs Extrato - Itajaí', 
+    page_title='Verifica preenchimento - ALF - Aprova Digital', 
     layout="centered", 
     initial_sidebar_state='expanded',
+    page_icon=('images/favicon.png'), 
     menu_items=None
 )
 
-st.subheader('Verificação de Processo JUCESC x Extrato Econômico')
+logo_image = ('images/logo.png')
 
-# Entradas de texto para colar o conteúdo dos arquivos
-ib_prefeitura = st.text_input(
-    "Cole todo o texto da página de detalhes do Processo (Prefeitura / JUCESC)",
-    key="ib_prefeitura"
-)
+# Sidebar
+# st.sidebar.image(logo_image, width=150) # Descomente se tiver a imagem
+st.sidebar.divider()
+st.sidebar.page_link("app.py", label="01_Consulta de Viabilidade (inscr.)")
+# ... Adicione os outros links da sidebar conforme o original ...
 
-ib_extrato = st.text_input(
-    "Cole todo o texto do Extrato do Cadastro Econômico",
-    key="ib_extrato"
-)
+# Página principal do Streamlit
+st.subheader('Verifica preenchimento - ALF - Aprova Digital')
+
+ib_aprova = st.text_area("Cole todo o texto da página do processo do Aprova Digital", key="ib_aprova", height=200)
+ib_cnpj = st.text_area("Cole todo o texto do CNPJ", key="ib_cnpj", height=200)
 
 # Botão limpar
 def clear_text():
-    st.session_state["ib_prefeitura"] = ""
-    st.session_state["ib_extrato"] = ""
-
+    st.session_state["ib_aprova"] = ""
+    st.session_state["ib_cnpj"] = ""
 st.button("Limpar", on_click=clear_text)
 
-# Funções auxiliares de normalização
-def normalizar_texto(texto):
-    if not texto:
-        return ""
-    texto_limpo = re.sub(r'[^\w\s]', '', texto)
-    return re.sub(r'\s+', ' ', texto_limpo).strip().upper()
+# Funções auxiliares de extração segura
+def extract_regex(pattern, text, default="Não encontrado"):
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else default
 
-def normalizar_cnaes(lista_cnaes):
-    normalizados = set()
-    for cnae in lista_cnaes:
-        apenas_digitos = re.sub(r'\D', '', cnae)
-        if len(apenas_digitos) >= 7:
-            normalizados.add(apenas_digitos[:7])
-    return normalizados
+# Análise do processo
+if ib_aprova and ib_cnpj:
+    try:
+        # ==========================================
+        # 1. EXTRAÇÃO DE INFORMAÇÕES - APROVA DIGITAL
+        # ==========================================
+        inscricao_match = re.search(r'\d{3}\.\d{3}\.\d{2}\.\d{4}\.\d{4}\.\d{3}', ib_aprova)
+        inscricao_aprova = inscricao_match.group(0) if inscricao_match else "Não encontrado"
+        
+        cnpj_aprova_match = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', ib_aprova)
+        cnpj_aprova = cnpj_aprova_match.group(0) if cnpj_aprova_match else "Não encontrado"
+        
+        razao_social_aprova = extract_regex(r'Razao Social\s+(.*?)\s+Nome Fantasia', ib_aprova)
+        
+        bairro_aprova = extract_regex(r'Bairro\s+(.*?)\s+Logradouro', ib_aprova)
+        logradouro_aprova = extract_regex(r'Logradouro\s+(.*?)\s+N[úu]mero Predial', ib_aprova)
+        numero_aprova = extract_regex(r'N[úu]mero Predial\s+(.*?)\s+CEP', ib_aprova)
+        complemento1_aprova = extract_regex(r'Complemento 1[^\n]*\s+(.*?)\s+Complemento 2', ib_aprova)
+        complemento2_aprova = extract_regex(r'Complemento 2[^\n]*\s+(.*?)\s+Complemento 3', ib_aprova)
+        complemento3_aprova = extract_regex(r'Complemento 3[^\n]*\s+(.*?)\s+Telefone Empresa', ib_aprova)
 
-# Análise e cruzamento dos dados
-try:
-    if ib_prefeitura and ib_extrato:
+        cnaes_aprova = list(set(re.findall(r'\d{2}\.\d{2}-\d-\d{2}', ib_aprova)))
 
-        # -------------------------------------------------------------
-        # 1. Extração de Informações - Processo (Prefeitura / JUCESC)
-        # -------------------------------------------------------------
-        cnpj_pref_m = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', ib_prefeitura)
-        cnpj_pref = cnpj_pref_m.group(0) if cnpj_pref_m else ""
+        # ==========================================
+        # 2. EXTRAÇÃO DE INFORMAÇÕES - CNPJ
+        # ==========================================
+        numero_cnpj_match = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', ib_cnpj)
+        numero_cnpj = numero_cnpj_match.group(0) if numero_cnpj_match else "Não encontrado"
+        
+        razao_social_cnpj = extract_regex(r'NOME EMPRESARIAL\s+(.*?)\s+T[ÍI]TULO DO ESTABELECIMENTO', ib_cnpj)
+        
+        logradouro_cnpj = extract_regex(r'LOGRADOURO\s+(.*?)\s+CEP', ib_cnpj)
+        bairro_cnpj = extract_regex(r'BAIRRO/DISTRITO\s+(.*?)\s+N[ÚU]MERO', ib_cnpj)
+        
+        # O CNPJ coloca o número e o complemento juntos após os títulos
+        numeropredial_cnpj = extract_regex(r'N[ÚU]MERO\s+COMPLEMENTO\s+(\d+)', ib_cnpj)
+        complemento_cnpj = extract_regex(r'N[ÚU]MERO\s+COMPLEMENTO\s+\d+\s+(.*?)\s+MUNIC[ÍI]PIO', ib_cnpj)
 
-        # Razão Social na JUCESC (tolerante a pipes e quebras de linha)[cite: 51]
-        nome_pref_m = re.search(r'Nome Empresarial:\s*(?:\|\s*)+([A-Z0-9\.\s\-]+)', ib_prefeitura, re.IGNORECASE)
-        if nome_pref_m:
-            razao_pref = re.sub(r'[\s\|]+', ' ', nome_pref_m.group(1)).strip()
-        else:
-            razao_pref = ""
+        cnaes_cnpj = list(set(re.findall(r'\d{2}\.\d{2}-\d-\d{2}', ib_cnpj)))
 
-        # Logradouro na JUCESC[cite: 52]
-        log_pref_m = re.search(r'Logradouro:\s*(?:\|\s*)+([^\n\r\|]+)', ib_prefeitura, re.IGNORECASE)
-        log_pref = log_pref_m.group(1).strip() if log_pref_m else ""
-
-        # Bairro na JUCESC[cite: 52]
-        bairro_pref_m = re.search(r'Bairro:\s*(?:\|\s*)+([^\n\r\|]+)', ib_prefeitura, re.IGNORECASE)
-        bairro_pref = bairro_pref_m.group(1).strip() if bairro_pref_m else ""
-
-        # -------------------------------------------------------------
-        # 2. Extração de Informações - Extrato Econômico
-        # -------------------------------------------------------------
-        cnpj_ext_m = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', ib_extrato)
-        cnpj_ext = cnpj_ext_m.group(0) if cnpj_ext_m else ""
-
-        # Razão Social no Extrato Econômico[cite: 47]
-        nome_ext_m = re.search(r'Extrato do Cadastro de Contribuinte Pessoa Jurídica\s*[\r\n]+([A-Z0-9\.\s\-]+)', ib_extrato, re.IGNORECASE)
-        if nome_ext_m:
-            razao_ext = nome_ext_m.group(1).strip()
-        else:
-            alt_ext = re.search(r'Identificação do Contribuinte.*?Nome:\s*\|?\s*([^\n\r]+)', ib_extrato, re.DOTALL | re.IGNORECASE)
-            razao_ext = alt_ext.group(1).strip() if alt_ext else "IMEBRA S.A."
-
-        # Logradouro no Extrato[cite: 47]
-        log_ext_m = re.search(r'Logradouro:\s*\|\s*([^\n\r]+)', ib_extrato, re.IGNORECASE)
-        log_ext = log_ext_m.group(1).strip() if log_ext_m else ""
-
-        # Número no Extrato[cite: 47]
-        num_ext_m = re.search(r'Número:\s*\|\s*([^\n\r]+)', ib_extrato, re.IGNORECASE)
-        num_ext = num_ext_m.group(1).strip() if num_ext_m else ""
-        if num_ext and log_ext:
-            log_ext_completo = f"{log_ext}, N°{num_ext}"
-        else:
-            log_ext_completo = log_ext
-
-        # Bairro no Extrato[cite: 47]
-        bairro_ext_m = re.search(r'Bairro:\s*\|\s*([^\n\r]+)', ib_extrato, re.IGNORECASE)
-        bairro_ext = bairro_ext_m.group(1).strip() if bairro_ext_m else ""
-
-        # CNAEs no Extrato[cite: 47, 48, 49]
-        cnaes_extrato = re.findall(r'\b\d{7}\b', ib_extrato)
-        cnaes_ext_set = normalizar_cnaes(cnaes_extrato)
-
-        # -------------------------------------------------------------
-        # 3. Comparações e Impressão de Resultados
-        # -------------------------------------------------------------
+        # ==========================================
+        # 3. EXIBIÇÃO E VERIFICAÇÕES
+        # ==========================================
         st.divider()
-        st.subheader('Resultados da Comparação de Dados')
-
-        # --- Verificação do CNPJ ---
-        st.markdown('### 1. Verificação do CNPJ')
-        if cnpj_pref and cnpj_ext and (cnpj_pref == cnpj_ext):
-            st.markdown(f':green[Ok! Os números de CNPJ coincidem perfeitamente: **{cnpj_pref}**]')
-        else:
-            st.markdown(f':red[VERIFICAR! Divergência ou ausência no CNPJ (JUCESC: {cnpj_pref} | Extrato: {cnpj_ext})]')
-
-        # --- Verificação da Razão Social ---
-        st.markdown('### 2. Verificação da Razão Social / Nome')
-        if normalizar_texto(razao_pref) in normalizar_texto(razao_ext) or normalizar_texto(razao_ext) in normalizar_texto(razao_pref):
-            st.markdown(f':green[Ok! A Razão Social coincide: **{razao_pref}**]')
-        else:
-            st.markdown(':red[VERIFICAR! A Razão Social apresenta divergências entre os documentos.]')
-            st.write(f'- **Processo JUCESC:** {razao_pref}')
-            st.write(f'- **Extrato Econômico:** {razao_ext}')
-
-        # --- Verificação de Endereço ---
-        st.markdown('### 3. Verificação de Endereço')
-        col1, col2 = st.columns(2)
-        with col1:
-            st.text('JUCESC / Prefeitura[cite: 52]:')
-            st.write(f'Logradouro: {log_pref}')
-            st.write(f'Bairro: {bairro_pref}')
-        with col2:
-            st.text('Extrato Econômico[cite: 47]:')
-            st.write(f'Logradouro: {log_ext_completo}')
-            st.write(f'Bairro: {bairro_ext}')
-
-        log_pref_limpo = normalizar_texto(log_pref)
-        log_ext_limpo = normalizar_texto(log_ext_completo)
+        st.subheader('Resumo do processo')
+        st.markdown(f'**RAZÃO SOCIAL:** {razao_social_aprova} | **CNPJ:** {cnpj_aprova}')
+        st.markdown(f'**ENDEREÇO CNPJ:** {logradouro_cnpj}, {numeropredial_cnpj}, {bairro_cnpj}, {complemento_cnpj}')
+        st.markdown(f'**INSCRIÇÃO IMOBILIÁRIA:** {inscricao_aprova}')
         
-        log_ok = any(palavra in log_ext_limpo for palavra in log_pref_limpo.split() if len(palavra) > 3)
-        bairro_ok = normalizar_texto(bairro_pref) == normalizar_texto(bairro_ext)
-
-        if log_ok and bairro_ok:
-            st.markdown(':green[Ok! Endereços compatíveis entre os documentos.]')
-        else:
-            st.markdown(':orange[Atenção: Verifique o endereço manualmente devido a diferenças de formatação entre os sistemas.]')
-
-        # --- Verificação dos CNAEs ---
-        st.markdown('### 4. Verificação de CNAEs / Atividades')
-        st.markdown(':orange[Nota: A página de detalhes da JUCESC exibe o evento de alteração mas não lista todos os códigos numéricos de CNAE em texto corrido; a listagem abaixo extrai e valida os códigos do Extrato Econômico.][cite: 47, 48, 49, 52]')
-        st.markdown(f'Total de CNAEs identificados no Extrato Econômico: **{len(cnaes_ext_set)}**[cite: 47]')
+        logradouro_google = "+".join(logradouro_aprova.split())
+        maps_link = f'https://www.google.com/maps/place/{logradouro_google},+{numero_aprova},+Itaja%C3%AD+-+SC'
+        st.markdown(f"[Ver no Google Maps]({maps_link})")
         
-        if len(cnaes_ext_set) > 0:
-            tabela_cnaes = pd.DataFrame({'CNAEs do Extrato Econômico': list(cnaes_ext_set)})
-            st.dataframe(tabela_cnaes)
+        # Verifica CNPJ
+        st.subheader('Verificação do CNPJ')
+        if numero_cnpj == cnpj_aprova:
+            st.success('Ok! Número CNPJ inserido corretamente no Aprova.')
         else:
-            st.markdown(':orange[Nenhum CNAE detectado no Extrato Econômico.]')
+            st.error('VERIFICAR! Número CNPJ NÃO coincide.')
 
-except Exception as e:
-    st.markdown(':red[Erro ao processar as informações. Verifique se colou os textos corretamente em ambos os campos.]')
+        # Verifica Razão Social
+        st.subheader('Verificação da Razão Social')
+        # Tratamos .upper() e removemos espaços em branco extras para comparar com segurança
+        if re.sub(r'\s+', ' ', razao_social_cnpj.upper()) == re.sub(r'\s+', ' ', razao_social_aprova.upper()):
+            st.success('Ok! A razão social inserida corretamente no Aprova.')
+        else:
+            st.error(f'VERIFICAR! A razão social NÃO coincide com o Aprova.\n\nCNPJ: {razao_social_cnpj}\nAprova: {razao_social_aprova}')
+        
+        # Verifica Endereço
+        st.subheader('Verificação do endereço')
+        st.markdown('**Verifique manualmente os endereços abaixo:**')
+        st.info(f'**Endereço no APROVA:** {logradouro_aprova}, {numero_aprova}, {bairro_aprova} - {complemento1_aprova}, {complemento2_aprova}, {complemento3_aprova}')
+        st.info(f'**Endereço no CNPJ:** {logradouro_cnpj}, {numeropredial_cnpj}, {bairro_cnpj} - {complemento_cnpj}')
+            
+        # Verifica CNAEs
+        st.subheader('Verificação dos CNAES')
+        if set(cnaes_cnpj) == set(cnaes_aprova):
+            st.success('Ok! CNAES coincidem entre o Aprova Digital e CNPJ.')
+            tabela_cnaes = pd.DataFrame({'CNAES (APROVA = CNPJ)': cnaes_aprova})
+            st.dataframe(tabela_cnaes, use_container_width=True)
+        else:
+            st.error('VERIFICAR! CNAES não coincidem entre Aprova Digital e CNPJ.')
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**CNAES no APROVA**")
+                st.dataframe(pd.DataFrame({"CNAE": cnaes_aprova}), use_container_width=True)
+            with col2:
+                st.write("**CNAES no CNPJ**")
+                st.dataframe(pd.DataFrame({"CNAE": cnaes_cnpj}), use_container_width=True)
+                
+            cnaes_faltando_aprova = set(cnaes_cnpj) - set(cnaes_aprova)
+            cnaes_sobrando_aprova = set(cnaes_aprova) - set(cnaes_cnpj)
+            
+            if cnaes_faltando_aprova:
+                st.warning(f'**CNAES no CNPJ que NÃO foram inseridos no APROVA:** {", ".join(cnaes_faltando_aprova)}')
+            if cnaes_sobrando_aprova:
+                st.warning(f'**CNAES no APROVA que NÃO constam no CNPJ:** {", ".join(cnaes_sobrando_aprova)}')
+
+    except Exception as e:
+        st.error(f'Verifique o correto preenchimento de todos os campos. Erro interno: {e}')
