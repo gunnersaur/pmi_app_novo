@@ -8,7 +8,7 @@ import streamlit as st
 # ============================================================
 
 st.set_page_config(
-    page_title="Verifica preenchimento - ALF - Legalização",
+    page_title="Verifica preenchimento - Cadastro - Legalização",
     page_icon="🔎",
     layout="wide"
 )
@@ -219,7 +219,7 @@ def extrair_bloco(texto, inicio, fim=None):
 
 
 # ============================================================
-# CNPJ
+# EXTRAÇÃO DO CNPJ
 # ============================================================
 
 def extrair_cnpj(texto):
@@ -256,7 +256,7 @@ def extrair_cnpj(texto):
 
 
 # ============================================================
-# CNAEs DO CADASTRO MUNICIPAL
+# EXTRAÇÃO DOS CNAEs DO CADASTRO
 # ============================================================
 
 def extrair_cnaes_cadastro(texto):
@@ -270,28 +270,17 @@ def extrair_cnaes_cadastro(texto):
 
         linha = linha.strip()
 
-        # ====================================================
-        # REGRA IMPORTANTE
+        # O CNAE do Cadastro aparece no início da linha
+        # com exatamente 7 dígitos, seguido de espaço.
         #
-        # O CNAE no Cadastro aparece no início da linha:
+        # Exemplo válido:
+        # 4693100 COMÉRCIO ATACADISTA...
         #
-        # 4693100 DESCRIÇÃO...
-        #
-        # Portanto:
-        #
-        # - exatamente 7 dígitos;
-        # - imediatamente seguidos por espaço;
-        # - deve existir conteúdo depois do espaço.
-        #
-        # Isso impede que:
-        #
+        # Não aceitar:
         # 1570 GALPAO:3;SALA:93
         #
-        # seja transformado em:
-        #
-        # 1570393
-        #
-        # ====================================================
+        # Isso impede que o endereço seja interpretado
+        # como um CNAE.
 
         match = re.match(
             r"^(\d{7})\s+\S",
@@ -309,14 +298,13 @@ def extrair_cnaes_cadastro(texto):
         codigo = normalizar_cnae(codigo)
 
         if codigo not in cnaes:
-
             cnaes.append(codigo)
 
     return cnaes
 
 
 # ============================================================
-# CADASTRO MUNICIPAL
+# EXTRAÇÃO DO CADASTRO MUNICIPAL
 # ============================================================
 
 def extrair_cadastro_municipal(texto):
@@ -343,7 +331,7 @@ def extrair_cadastro_municipal(texto):
     dados["cnpj"] = extrair_cnpj(texto)
 
     # --------------------------------------------------------
-    # IDENTIFICAÇÃO
+    # IDENTIFICAÇÃO DO CONTRIBUINTE
     # --------------------------------------------------------
 
     bloco_identificacao = extrair_bloco(
@@ -368,36 +356,23 @@ def extrair_cadastro_municipal(texto):
 
     # --------------------------------------------------------
     # RAZÃO SOCIAL
-    #
-    # No PDF extraído os rótulos e valores podem aparecer
-    # separados.
-    #
-    # Exemplo:
-    #
-    # Nome:
-    # Nome Fantasia:
-    # Desc. Natureza Jurídica:
-    # Correio Eletrônico:
-    # IMEBRA S.A.
-    # IMEBRA S.A
-    #
     # --------------------------------------------------------
 
-    indice_correspondencia = None
+    indice_email = None
 
     for i, linha in enumerate(linhas_identificacao):
 
         if normalizar_texto(linha) == "CORREIO ELETRÔNICO:":
 
-            indice_correspondencia = i
+            indice_email = i
             break
 
-    if indice_correspondencia is not None:
+    if indice_email is not None:
 
         candidatos = []
 
         for linha in linhas_identificacao[
-            indice_correspondencia + 1:
+            indice_email + 1:
         ]:
 
             if normalizar_texto(linha) == "ENDEREÇO":
@@ -526,11 +501,7 @@ def extrair_cadastro_municipal(texto):
             dados["cep"] = ceps[0]
 
         # ----------------------------------------------------
-        # NÚMERO + COMPLEMENTO
-        #
-        # Exemplo:
-        #
-        # 1570 GALPAO:3;SALA:93
+        # NÚMERO E COMPLEMENTO
         # ----------------------------------------------------
 
         indice_numero = None
@@ -557,7 +528,7 @@ def extrair_cadastro_municipal(texto):
                 break
 
         # ----------------------------------------------------
-        # BAIRRO + LOGRADOURO
+        # BAIRRO E LOGRADOURO
         # ----------------------------------------------------
 
         if indice_numero is not None:
@@ -608,15 +579,15 @@ def extrair_cadastro_municipal(texto):
     # CNAEs
     # --------------------------------------------------------
 
-    dados["cnaes"] = extrair_cnaes_cadastro(
-        texto
+    dados["cnaes"] = (
+        extrair_cnaes_cadastro(texto)
     )
 
     return dados
 
 
 # ============================================================
-# LEGALIZAÇÃO
+# EXTRAÇÃO DA LEGALIZAÇÃO
 # ============================================================
 
 def extrair_legalizacao(texto):
@@ -819,16 +790,16 @@ def extrair_legalizacao(texto):
                 match.group(1)
             )
 
-            if codigo not in dados[
-                "cnaes_secundarios"
-            ]:
+            if codigo not in (
+                dados["cnaes_secundarios"]
+            ):
 
                 dados[
                     "cnaes_secundarios"
                 ].append(codigo)
 
     # --------------------------------------------------------
-    # LISTA COMPLETA
+    # LISTA COMPLETA DE CNAEs
     # --------------------------------------------------------
 
     if dados["cnae_principal"]:
@@ -849,7 +820,7 @@ def extrair_legalizacao(texto):
 
 
 # ============================================================
-# COMPARAÇÃO
+# COMPARAÇÃO DE CAMPOS
 # ============================================================
 
 def comparar_campo(
@@ -1217,7 +1188,7 @@ def mostrar_cnaes(
 
 
 # ============================================================
-# LIMPAR CAMPOS
+# BOTÃO LIMPAR
 # ============================================================
 
 def limpar_campos():
@@ -1236,7 +1207,7 @@ def limpar_campos():
 # ============================================================
 
 st.title(
-    "🔎 Verifica preenchimento - ALF - Legalização"
+    "🔎 Verifica preenchimento - Cadastro - Legalização"
 )
 
 st.write(
@@ -1246,7 +1217,7 @@ st.write(
 
 
 # ============================================================
-# INPUTS
+# CAMPOS DE INPUT
 # ============================================================
 
 col1, col2 = st.columns(2)
@@ -1349,7 +1320,6 @@ if analisar:
 
         col1, col2 = st.columns(2)
 
-
         # ----------------------------------------------------
         # CADASTRO
         # ----------------------------------------------------
@@ -1399,7 +1369,6 @@ if analisar:
                 f"**CEP:** "
                 f"{cadastro['cep'] or 'Não informado'}"
             )
-
 
         # ----------------------------------------------------
         # LEGALIZAÇÃO
@@ -1451,7 +1420,6 @@ if analisar:
                 f"{legalizacao['cep'] or 'Não informado'}"
             )
 
-
         # ====================================================
         # COMPARAÇÃO
         # ====================================================
@@ -1464,14 +1432,12 @@ if analisar:
 
         resultados = {}
 
-
         resultados["CNPJ"] = mostrar_comparacao(
             "CNPJ",
             cadastro["cnpj"],
             legalizacao["cnpj"],
             normalizar_cep
         )
-
 
         resultados["Razão Social"] = mostrar_comparacao(
             "Razão Social",
@@ -1480,14 +1446,12 @@ if analisar:
             normalizar_razao_social
         )
 
-
         resultados["Natureza Jurídica"] = mostrar_comparacao(
             "Natureza Jurídica",
             cadastro["natureza_juridica"],
             legalizacao["natureza_juridica"],
             normalizar_natureza_juridica
         )
-
 
         resultados["Logradouro"] = mostrar_comparacao(
             "Logradouro",
@@ -1496,14 +1460,12 @@ if analisar:
             normalizar_logradouro
         )
 
-
         resultados["Número"] = mostrar_comparacao(
             "Número",
             cadastro["numero"],
             legalizacao["numero"],
             normalizar_numero
         )
-
 
         resultados["Bairro"] = mostrar_comparacao(
             "Bairro",
@@ -1512,7 +1474,6 @@ if analisar:
             normalizar_sem_acentos
         )
 
-
         resultados["Complemento"] = mostrar_comparacao(
             "Complemento",
             cadastro["complemento"],
@@ -1520,14 +1481,12 @@ if analisar:
             normalizar_complemento
         )
 
-
         resultados["CEP"] = mostrar_comparacao(
             "CEP",
             cadastro["cep"],
             legalizacao["cep"],
             normalizar_cep
         )
-
 
         # ====================================================
         # CNAEs
@@ -1539,7 +1498,6 @@ if analisar:
             cadastro["cnaes"],
             legalizacao["cnaes"]
         )
-
 
         # ====================================================
         # RESULTADO FINAL
@@ -1553,7 +1511,6 @@ if analisar:
 
         divergencias = []
         pendencias = []
-
 
         for campo, status in resultados.items():
 
@@ -1575,7 +1532,6 @@ if analisar:
                     campo
                 )
 
-
         (
             _,
             somente_cadastro,
@@ -1584,7 +1540,6 @@ if analisar:
             cadastro["cnaes"],
             legalizacao["cnaes"]
         )
-
 
         if (
             somente_cadastro
@@ -1595,9 +1550,8 @@ if analisar:
                 "CNAEs"
             )
 
-
         # ----------------------------------------------------
-        # RESULTADO
+        # RESULTADO FINAL
         # ----------------------------------------------------
 
         if divergencias:
@@ -1630,7 +1584,6 @@ if analisar:
                 "🟢 Os dados analisados estão consistentes "
                 "entre o Cadastro Municipal e a Legalização."
             )
-
 
         # ====================================================
         # CONFERÊNCIA TÉCNICA
