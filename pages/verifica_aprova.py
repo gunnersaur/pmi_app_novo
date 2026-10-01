@@ -1,409 +1,627 @@
 import re
+import unicodedata
 import streamlit as st
 
 
 # ============================================================
-# CONFIGURAÇÃO DA PÁGINA
+# CONFIGURAÇÃO
 # ============================================================
 
 st.set_page_config(
-    page_title="Verifica preenchimento - ALF - Aprova Digital",
-    page_icon="🏢",
+    page_title="Verifica preenchimento - ALF - Legalização",
+    page_icon="🔎",
     layout="wide"
 )
 
 
 # ============================================================
-# CSS
+# MENU LATERAL
 # ============================================================
 
-st.markdown(
+st.sidebar.title("Aplicações")
+
+st.sidebar.markdown(
     """
-    <style>
-        .resultado {
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 8px;
-            border: 1px solid #ddd;
-        }
-
-        .igual {
-            background-color: #eaf7ea;
-            border-left: 5px solid #2e8b57;
-        }
-
-        .diferente {
-            background-color: #fdecec;
-            border-left: 5px solid #d9534f;
-        }
-
-        .atencao {
-            background-color: #fff8df;
-            border-left: 5px solid #e0a800;
-        }
-
-        .info {
-            background-color: #eef5ff;
-            border-left: 5px solid #4285f4;
-        }
-
-        .titulo-secao {
-            margin-top: 15px;
-            margin-bottom: 10px;
-        }
-
-        .codigo {
-            font-family: monospace;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True
+    - [App](https://pmiappnovo-copia.streamlit.app/)
+    - [CV Zona](https://pmiappnovo-copia.streamlit.app/cv_zona)
+    - [Documentação Complementar - ALF](https://pmiappnovo-copia.streamlit.app/documentacao-complementar-ALF)
+    - [Estudo de Impacto de Vizinhança](https://pmiappnovo-copia.streamlit.app/estudo-de-impacto-de-vizinhanca)
+    - [Links](https://pmiappnovo-copia.streamlit.app/links)
+    - [Verifica Aprova](https://pmiappnovo-copia.streamlit.app/verifica-aprova)
+    """
 )
 
 
 # ============================================================
-# FUNÇÕES DE NORMALIZAÇÃO
+# NORMALIZAÇÃO
 # ============================================================
 
-def normalizar_texto(texto):
-    """
-    Normaliza texto para comparação:
-    - remove acentos
-    - transforma em maiúsculas
-    - remove espaços duplicados
-    """
-    if texto is None:
+def normalizar_texto(valor):
+    if valor is None:
         return ""
 
-    texto = str(texto).strip().upper()
+    valor = str(valor)
+    valor = unicodedata.normalize("NFKC", valor)
+    valor = re.sub(r"\s+", " ", valor)
 
-    substituicoes = {
-        "Á": "A",
-        "À": "A",
-        "Â": "A",
-        "Ã": "A",
-        "Ä": "A",
-        "É": "E",
-        "È": "E",
-        "Ê": "E",
-        "Ë": "E",
-        "Í": "I",
-        "Ì": "I",
-        "Î": "I",
-        "Ï": "I",
-        "Ó": "O",
-        "Ò": "O",
-        "Ô": "O",
-        "Õ": "O",
-        "Ö": "O",
-        "Ú": "U",
-        "Ù": "U",
-        "Û": "U",
-        "Ü": "U",
-        "Ç": "C",
-    }
-
-    for origem, destino in substituicoes.items():
-        texto = texto.replace(origem, destino)
-
-    texto = re.sub(r"\s+", " ", texto)
-
-    return texto.strip()
+    return valor.strip().upper()
 
 
-def normalizar_cnpj(texto):
-    """Retorna somente os 14 dígitos do CNPJ."""
-    if not texto:
+def normalizar_sem_acentos(valor):
+    valor = normalizar_texto(valor)
+
+    valor = unicodedata.normalize("NFD", valor)
+
+    return "".join(
+        c for c in valor
+        if unicodedata.category(c) != "Mn"
+    )
+
+
+def normalizar_razao_social(valor):
+
+    valor = normalizar_sem_acentos(valor)
+
+    return re.sub(
+        r"[^A-Z0-9]",
+        "",
+        valor
+    )
+
+
+def normalizar_natureza_juridica(valor):
+
+    valor = normalizar_sem_acentos(valor)
+
+    return re.sub(
+        r"[^A-Z0-9]",
+        "",
+        valor
+    )
+
+
+def normalizar_logradouro(valor):
+
+    valor = normalizar_sem_acentos(valor)
+
+    valor = re.sub(
+        r"\bN[º°]?\s*\d+\b",
+        "",
+        valor
+    )
+
+    valor = re.sub(
+        r"[^A-Z0-9 ]",
+        " ",
+        valor
+    )
+
+    valor = re.sub(
+        r"\s+",
+        " ",
+        valor
+    ).strip()
+
+    valor = re.sub(
+        r"^(RUA|R\.|AVENIDA|AV\.|ALAMEDA|AL\.|TRAVESSA|TV\.|RODOVIA|ROD\.)\s+",
+        "",
+        valor
+    )
+
+    return valor
+
+
+def normalizar_numero(valor):
+
+    if not valor:
         return ""
 
-    return re.sub(r"\D", "", texto)
+    match = re.search(
+        r"\d+",
+        str(valor)
+    )
+
+    return match.group(0) if match else ""
 
 
-def normalizar_cep(texto):
-    """Retorna somente os 8 dígitos do CEP."""
-    if not texto:
+def normalizar_cep(valor):
+
+    if not valor:
         return ""
 
-    return re.sub(r"\D", "", texto)
+    return re.sub(
+        r"\D",
+        "",
+        str(valor)
+    )
 
 
-def normalizar_cnae(texto):
-    """
-    Normaliza CNAE para 7 dígitos.
+def normalizar_complemento(valor):
 
-    Exemplos:
-    46.93-1/00 -> 4693100
-    4693100    -> 4693100
-    """
-    if not texto:
+    valor = normalizar_sem_acentos(valor)
+
+    valor = re.sub(
+        r"[^A-Z0-9 ]",
+        " ",
+        valor
+    )
+
+    valor = re.sub(
+        r"\s+",
+        " ",
+        valor
+    )
+
+    return valor.strip()
+
+
+def normalizar_cnae(valor):
+
+    if not valor:
         return ""
 
-    codigo = re.sub(r"\D", "", str(texto))
+    return re.sub(
+        r"\D",
+        "",
+        str(valor)
+    )
 
-    if len(codigo) == 7:
+
+def formatar_cnae(codigo):
+
+    codigo = normalizar_cnae(codigo)
+
+    if len(codigo) != 7:
         return codigo
 
-    return ""
-
-
-def formatar_cnae(cnae):
-    """Formata CNAE no padrão 46.93-1/00."""
-    cnae = normalizar_cnae(cnae)
-
-    if len(cnae) != 7:
-        return cnae
-
     return (
-        f"{cnae[0:2]}."
-        f"{cnae[2:4]}-"
-        f"{cnae[4]}/"
-        f"{cnae[5:7]}"
+        codigo[:2]
+        + "."
+        + codigo[2:4]
+        + "-"
+        + codigo[4]
+        + "/"
+        + codigo[5:]
     )
 
 
 # ============================================================
-# NORMALIZAÇÃO DE ENDEREÇO
+# EXTRAÇÃO DE BLOCOS
 # ============================================================
 
-PREFIXOS_LOGRADOURO = [
-    "RUA ",
-    "R. ",
-    "AVENIDA ",
-    "AV. ",
-    "RODOVIA ",
-    "ROD. ",
-    "ESTRADA ",
-    "EST. ",
-    "TRAVESSA ",
-    "TRAV. ",
-    "ALAMEDA ",
-    "AL. ",
-    "PRACA ",
-    "PRAÇA ",
-    "LARGO ",
-    "SERVIDAO ",
-    "SERVIDÃO ",
-]
+def extrair_bloco(texto, inicio, fim=None):
 
+    if not texto:
+        return ""
 
-def normalizar_logradouro(texto):
-    """
-    Normaliza logradouro para comparação.
+    pos_inicio = texto.lower().find(
+        inicio.lower()
+    )
 
-    Exemplo:
-    RUA JOAO THOMAZ PINTO
-    JOAO THOMAZ PINTO
+    if pos_inicio == -1:
+        return ""
 
-    tornam-se equivalentes.
-    """
-    texto = normalizar_texto(texto)
+    pos_inicio += len(inicio)
 
-    # Remove número que eventualmente tenha vindo junto
-    texto = re.sub(
-        r",?\s*N[º°]?\s*\d+.*$",
-        "",
-        texto
-    ).strip()
+    if fim:
 
-    for prefixo in PREFIXOS_LOGRADOURO:
-        prefixo_norm = normalizar_texto(prefixo)
+        pos_fim = texto.lower().find(
+            fim.lower(),
+            pos_inicio
+        )
 
-        if texto.startswith(prefixo_norm):
-            texto = texto[len(prefixo_norm):].strip()
-            break
+        if pos_fim != -1:
+            return texto[
+                pos_inicio:pos_fim
+            ]
 
-    return texto
-
-
-def normalizar_complemento(texto):
-    return normalizar_texto(texto)
-
-
-def normalizar_bairro(texto):
-    return normalizar_texto(texto)
+    return texto[pos_inicio:]
 
 
 # ============================================================
-# EXTRAÇÃO DO CADASTRO MUNICIPAL
+# CNPJ
+# ============================================================
+
+def extrair_cnpj(texto):
+
+    if not texto:
+        return ""
+
+    padroes = [
+
+        r"CPF/CNPJ\s*:\s*(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})",
+
+        r"CNPJ\s*:\s*(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})",
+
+        r"\b(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})\b"
+    ]
+
+    for padrao in padroes:
+
+        match = re.search(
+            padrao,
+            texto,
+            flags=re.IGNORECASE
+        )
+
+        if match:
+
+            return re.sub(
+                r"\D",
+                "",
+                match.group(1)
+            )
+
+    return ""
+
+
+# ============================================================
+# CNAEs DO CADASTRO MUNICIPAL
+# ============================================================
+
+def extrair_cnaes_cadastro(texto):
+
+    cnaes = []
+
+    if not texto:
+        return cnaes
+
+    for linha in texto.splitlines():
+
+        linha = linha.strip()
+
+        # ====================================================
+        # REGRA IMPORTANTE
+        #
+        # O CNAE no Cadastro aparece no início da linha:
+        #
+        # 4693100 DESCRIÇÃO...
+        #
+        # Portanto:
+        #
+        # - exatamente 7 dígitos;
+        # - imediatamente seguidos por espaço;
+        # - deve existir conteúdo depois do espaço.
+        #
+        # Isso impede que:
+        #
+        # 1570 GALPAO:3;SALA:93
+        #
+        # seja transformado em:
+        #
+        # 1570393
+        #
+        # ====================================================
+
+        match = re.match(
+            r"^(\d{7})\s+\S",
+            linha
+        )
+
+        if not match:
+            continue
+
+        codigo = match.group(1)
+
+        if len(codigo) != 7:
+            continue
+
+        codigo = normalizar_cnae(codigo)
+
+        if codigo not in cnaes:
+
+            cnaes.append(codigo)
+
+    return cnaes
+
+
+# ============================================================
+# CADASTRO MUNICIPAL
 # ============================================================
 
 def extrair_cadastro_municipal(texto):
-    """
-    Extrai informações do:
-
-    Extrato do Cadastro de Contribuinte Pessoa Jurídica
-    Município de Itajaí
-    Secretaria Municipal da Fazenda
-    """
 
     dados = {
         "cnpj": "",
         "razao_social": "",
-        "nome_fantasia": "",
         "natureza_juridica": "",
         "logradouro": "",
         "numero": "",
         "bairro": "",
         "complemento": "",
         "cep": "",
-        "cnaes": [],
+        "cnaes": []
     }
 
     if not texto:
         return dados
 
-    linhas = [
-        linha.strip()
-        for linha in texto.splitlines()
-        if linha.strip()
-    ]
-
     # --------------------------------------------------------
     # CNPJ
     # --------------------------------------------------------
 
-    for linha in linhas:
-        if re.search(r"\bCNPJ\b", linha, re.IGNORECASE):
-            match = re.search(
-                r"\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}",
-                linha
-            )
+    dados["cnpj"] = extrair_cnpj(texto)
 
-            if match:
-                dados["cnpj"] = normalizar_cnpj(match.group())
+    # --------------------------------------------------------
+    # IDENTIFICAÇÃO
+    # --------------------------------------------------------
+
+    bloco_identificacao = extrair_bloco(
+        texto,
+        "Identificação do Contribuinte",
+        "Endereço Correspondência"
+    )
+
+    if not bloco_identificacao:
+
+        bloco_identificacao = extrair_bloco(
+            texto,
+            "Identificação do Contribuinte",
+            "Endereço"
+        )
+
+    linhas_identificacao = [
+        linha.strip()
+        for linha in bloco_identificacao.splitlines()
+        if linha.strip()
+    ]
+
+    # --------------------------------------------------------
+    # RAZÃO SOCIAL
+    #
+    # No PDF extraído os rótulos e valores podem aparecer
+    # separados.
+    #
+    # Exemplo:
+    #
+    # Nome:
+    # Nome Fantasia:
+    # Desc. Natureza Jurídica:
+    # Correio Eletrônico:
+    # IMEBRA S.A.
+    # IMEBRA S.A
+    #
+    # --------------------------------------------------------
+
+    indice_correspondencia = None
+
+    for i, linha in enumerate(linhas_identificacao):
+
+        if normalizar_texto(linha) == "CORREIO ELETRÔNICO:":
+
+            indice_correspondencia = i
+            break
+
+    if indice_correspondencia is not None:
+
+        candidatos = []
+
+        for linha in linhas_identificacao[
+            indice_correspondencia + 1:
+        ]:
+
+            if normalizar_texto(linha) == "ENDEREÇO":
                 break
 
-    # Caso não tenha sido encontrado pelo rótulo
-    if not dados["cnpj"]:
+            if "@" in linha:
+                continue
+
+            if re.fullmatch(
+                r"\d+",
+                linha
+            ):
+                continue
+
+            if re.search(
+                r"\d{5}-\d{3}",
+                linha
+            ):
+                continue
+
+            if re.search(
+                r"\d{2}/\d{2}/\d{4}",
+                linha
+            ):
+                continue
+
+            if len(
+                re.sub(
+                    r"[^A-Za-zÀ-ÿ]",
+                    "",
+                    linha
+                )
+            ) < 3:
+                continue
+
+            candidatos.append(linha)
+
+        if candidatos:
+
+            dados["razao_social"] = candidatos[0]
+
+    # --------------------------------------------------------
+    # FALLBACK DA RAZÃO SOCIAL
+    # --------------------------------------------------------
+
+    if not dados["razao_social"]:
+
         match = re.search(
-            r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b",
-            texto
+            r"\b([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ0-9&.\- ]{3,}\s+S\.?\s*A\.?)\b",
+            texto,
+            flags=re.IGNORECASE
         )
 
         if match:
-            dados["cnpj"] = normalizar_cnpj(match.group())
+
+            dados["razao_social"] = (
+                match.group(1).strip()
+            )
 
     # --------------------------------------------------------
-    # NOME
+    # NATUREZA JURÍDICA
     # --------------------------------------------------------
 
-    for i, linha in enumerate(linhas):
+    padroes_natureza = [
 
-        if re.match(
-            r"^Nome\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
+        r"\b(\d{3}-\d)\s+Sociedade\s+Anônima\s+Fechada\b",
 
-            if valor:
-                dados["razao_social"] = valor
+        r"\b(\d{3}-\d)\s+([A-Za-zÀ-ÿ][^\n\r]+)"
+    ]
 
-        elif re.match(
-            r"^Nome Fantasia\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
+    for padrao in padroes_natureza:
 
-            if valor:
-                dados["nome_fantasia"] = valor
+        match = re.search(
+            padrao,
+            texto,
+            flags=re.IGNORECASE
+        )
 
-        elif re.match(
-            r"^Natureza Jurídica\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
+        if match:
 
-            if valor:
-                dados["natureza_juridica"] = valor
+            if len(match.groups()) == 1:
+
+                dados["natureza_juridica"] = (
+                    match.group(1)
+                )
+
+            else:
+
+                dados["natureza_juridica"] = (
+                    match.group(1)
+                    + " "
+                    + match.group(2).strip()
+                )
+
+            break
 
     # --------------------------------------------------------
     # ENDEREÇO
     # --------------------------------------------------------
 
-    for linha in linhas:
+    bloco_endereco = extrair_bloco(
+        texto,
+        "Endereço",
+        "Endereço Correspondência"
+    )
 
-        if re.match(
-            r"^Logradouro\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
-            dados["logradouro"] = valor
+    if bloco_endereco:
 
-        elif re.match(
-            r"^Número\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
-            dados["numero"] = valor
+        linhas_endereco = [
+            linha.strip()
+            for linha in bloco_endereco.splitlines()
+            if linha.strip()
+        ]
 
-        elif re.match(
-            r"^Bairro\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
-            dados["bairro"] = valor
+        # ----------------------------------------------------
+        # CEP
+        # ----------------------------------------------------
 
-        elif re.match(
-            r"^Complemento\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
-            dados["complemento"] = valor
+        ceps = re.findall(
+            r"\b\d{5}-\d{3}\b",
+            bloco_endereco
+        )
 
-        elif re.match(
-            r"^CEP\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
-            dados["cep"] = normalizar_cep(valor)
+        if ceps:
+
+            dados["cep"] = ceps[0]
+
+        # ----------------------------------------------------
+        # NÚMERO + COMPLEMENTO
+        #
+        # Exemplo:
+        #
+        # 1570 GALPAO:3;SALA:93
+        # ----------------------------------------------------
+
+        indice_numero = None
+
+        for i, linha in enumerate(linhas_endereco):
+
+            match_numero = re.match(
+                r"^(\d+)(?:\s+(.*))?$",
+                linha
+            )
+
+            if match_numero:
+
+                dados["numero"] = (
+                    match_numero.group(1)
+                )
+
+                dados["complemento"] = (
+                    match_numero.group(2) or ""
+                ).strip()
+
+                indice_numero = i
+
+                break
+
+        # ----------------------------------------------------
+        # BAIRRO + LOGRADOURO
+        # ----------------------------------------------------
+
+        if indice_numero is not None:
+
+            candidatos = []
+
+            for linha in linhas_endereco[
+                indice_numero + 1:
+            ]:
+
+                if not linha:
+                    continue
+
+                if linha.endswith(":"):
+                    continue
+
+                if "@" in linha:
+                    continue
+
+                if re.fullmatch(
+                    r"\d{5}-\d{3}",
+                    linha
+                ):
+                    continue
+
+                quantidade_letras = len(
+                    re.sub(
+                        r"[^A-Za-zÀ-ÿ]",
+                        "",
+                        linha
+                    )
+                )
+
+                if quantidade_letras < 3:
+                    continue
+
+                candidatos.append(linha)
+
+            if candidatos:
+
+                dados["bairro"] = candidatos[0]
+
+            if len(candidatos) >= 2:
+
+                dados["logradouro"] = candidatos[1]
 
     # --------------------------------------------------------
     # CNAEs
     # --------------------------------------------------------
 
-    # O Cadastro Municipal apresenta CNAEs no formato:
-    # 4693100
-    # 2599302
-    # etc.
-    #
-    # Procuramos linhas que sejam exatamente um código de 7
-    # dígitos.
-
-    cnaes = []
-
-    for linha in linhas:
-
-        codigo = normalizar_cnae(linha)
-
-        if codigo:
-            cnaes.append(codigo)
-
-    # Remove duplicidades preservando a ordem
-    dados["cnaes"] = list(dict.fromkeys(cnaes))
+    dados["cnaes"] = extrair_cnaes_cadastro(
+        texto
+    )
 
     return dados
 
 
 # ============================================================
-# EXTRAÇÃO DO APROVA DIGITAL
+# LEGALIZAÇÃO
 # ============================================================
 
-def extrair_aprova(texto):
-    """
-    Extrai informações do documento da Análise do Alvará
-    do Aprova Digital.
-    """
+def extrair_legalizacao(texto):
 
     dados = {
-        "protocolo": "",
         "cnpj": "",
         "razao_social": "",
         "natureza_juridica": "",
@@ -414,506 +632,649 @@ def extrair_aprova(texto):
         "cep": "",
         "cnae_principal": "",
         "cnaes_secundarios": [],
-        "cnaes": [],
+        "cnaes": []
     }
 
     if not texto:
         return dados
 
-    linhas = [
-        linha.strip()
-        for linha in texto.splitlines()
-        if linha.strip()
-    ]
-
     # --------------------------------------------------------
-    # CAMPOS PRINCIPAIS
+    # CNPJ
     # --------------------------------------------------------
 
-    for linha in linhas:
+    dados["cnpj"] = extrair_cnpj(texto)
 
-        if re.match(
-            r"^Protocolo\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            dados["protocolo"] = linha.split(":", 1)[1].strip()
+    # --------------------------------------------------------
+    # RAZÃO SOCIAL
+    # --------------------------------------------------------
 
-        elif re.match(
-            r"^CNPJ\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
-            dados["cnpj"] = normalizar_cnpj(valor)
+    match = re.search(
+        r"Nome Empresarial\s*:\s*(.+)",
+        texto,
+        flags=re.IGNORECASE
+    )
 
-        elif re.match(
-            r"^Nome Empresarial\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            dados["razao_social"] = linha.split(
-                ":",
-                1
-            )[1].strip()
+    if match:
 
-        elif re.match(
-            r"^Natureza Jurídica\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            dados["natureza_juridica"] = linha.split(
-                ":",
-                1
-            )[1].strip()
+        dados["razao_social"] = (
+            match.group(1).strip()
+        )
 
-        elif re.match(
-            r"^Logradouro\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
+    # --------------------------------------------------------
+    # NATUREZA JURÍDICA
+    # --------------------------------------------------------
 
-            # Exemplo:
-            # RUA JOAO THOMAZ PINTO, Nº1570
+    match = re.search(
+        r"Natureza Jurídica\s*:\s*(.+)",
+        texto,
+        flags=re.IGNORECASE
+    )
 
-            match = re.search(
-                r"^(.*?),?\s*N[º°]?\s*(\d+)\s*$",
-                valor,
-                re.IGNORECASE
+    if match:
+
+        dados["natureza_juridica"] = (
+            match.group(1).strip()
+        )
+
+    # --------------------------------------------------------
+    # LOGRADOURO + NÚMERO
+    # --------------------------------------------------------
+
+    match = re.search(
+        r"Logradouro\s*:\s*(.+)",
+        texto,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+
+        endereco = match.group(1).strip()
+
+        numero_match = re.search(
+            r"N[º°]\s*(\d+)",
+            endereco,
+            flags=re.IGNORECASE
+        )
+
+        if numero_match:
+
+            dados["numero"] = (
+                numero_match.group(1)
             )
 
-            if match:
-                dados["logradouro"] = match.group(1).strip()
-                dados["numero"] = match.group(2).strip()
-            else:
-                dados["logradouro"] = valor
+            dados["logradouro"] = (
+                endereco[:numero_match.start()]
+                .rstrip(" ,")
+            )
 
-        elif re.match(
-            r"^Complemento\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            dados["complemento"] = linha.split(
-                ":",
-                1
-            )[1].strip()
+        else:
 
-        elif re.match(
-            r"^Bairro\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            dados["bairro"] = linha.split(
-                ":",
-                1
-            )[1].strip()
-
-        elif re.match(
-            r"^CEP\s*:",
-            linha,
-            re.IGNORECASE
-        ):
-            valor = linha.split(":", 1)[1].strip()
-            dados["cep"] = normalizar_cep(valor)
+            dados["logradouro"] = endereco
 
     # --------------------------------------------------------
+    # COMPLEMENTO
+    # --------------------------------------------------------
+
+    match = re.search(
+        r"Complemento\s*:\s*(.*)",
+        texto,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+
+        dados["complemento"] = (
+            match.group(1).strip()
+        )
+
+    # --------------------------------------------------------
+    # BAIRRO
+    # --------------------------------------------------------
+
+    match = re.search(
+        r"Bairro\s*:\s*(.*)",
+        texto,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+
+        dados["bairro"] = (
+            match.group(1).strip()
+        )
+
+    # --------------------------------------------------------
+    # CEP
+    # --------------------------------------------------------
+
+    match = re.search(
+        r"CEP\s*:\s*(\d{5}-\d{3})",
+        texto,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+
+        dados["cep"] = (
+            match.group(1)
+        )
+
+    # ========================================================
     # CNAEs
-    # --------------------------------------------------------
+    # ========================================================
 
-    # CNAE principal:
-    #
-    # Atividade Econômica Principal
-    # ...
-    # 46.93-1/00 - ...
-
-    encontrou_principal = False
-    encontrou_secundarias = False
-
-    cnaes_secundarios = []
-
-    for i, linha in enumerate(linhas):
-
-        # Identificação das seções
-        if normalizar_texto(
-            linha
-        ) == "ATIVIDADE ECONOMICA PRINCIPAL":
-
-            encontrou_principal = True
-            encontrou_secundarias = False
-            continue
-
-        if normalizar_texto(
-            linha
-        ) == "ATIVIDADES ECONOMICAS SECUNDARIAS":
-
-            encontrou_principal = False
-            encontrou_secundarias = True
-            continue
-
-        # ----------------------------------------------------
-        # CNAE com descrição
-        # ----------------------------------------------------
-
-        match = re.match(
-            r"^(\d{2}\.\d{2}-\d/\d{2})\s*-\s*(.*)$",
-            linha
-        )
-
-        if not match:
-            continue
-
-        codigo = normalizar_cnae(match.group(1))
-
-        if not codigo:
-            continue
-
-        if encontrou_principal and not dados["cnae_principal"]:
-            dados["cnae_principal"] = codigo
-
-        elif encontrou_secundarias:
-            cnaes_secundarios.append(codigo)
-
-    dados["cnaes_secundarios"] = list(
-        dict.fromkeys(cnaes_secundarios)
+    padrao_cnae = re.compile(
+        r"^\s*(\d{2}\.\d{2}-\d/\d{2})\s*-\s*(.+)$"
     )
-
-    # Todos os CNAEs, mantendo principal primeiro
-    todos = []
-
-    if dados["cnae_principal"]:
-        todos.append(dados["cnae_principal"])
-
-    todos.extend(dados["cnaes_secundarios"])
-
-    dados["cnaes"] = list(dict.fromkeys(todos))
-
-    return dados
-
-
-# ============================================================
-# COMPARAÇÕES
-# ============================================================
-
-def comparar_valores(valor1, valor2, normalizador=None):
-
-    if normalizador:
-        v1 = normalizador(valor1)
-        v2 = normalizador(valor2)
-    else:
-        v1 = valor1
-        v2 = valor2
-
-    if not v1 and not v2:
-        return "nao_informado"
-
-    if not v1 or not v2:
-        return "nao_informado"
-
-    if v1 == v2:
-        return "igual"
-
-    return "diferente"
-
-
-def mostrar_comparacao(
-    campo,
-    valor_cadastro,
-    valor_aprova,
-    normalizador=None,
-    formatador=None
-):
-
-    status = comparar_valores(
-        valor_cadastro,
-        valor_aprova,
-        normalizador
-    )
-
-    if formatador:
-        exibicao_cadastro = formatador(valor_cadastro)
-        exibicao_aprova = formatador(valor_aprova)
-    else:
-        exibicao_cadastro = valor_cadastro or "—"
-        exibicao_aprova = valor_aprova or "—"
-
-    if status == "igual":
-
-        st.success(
-            f"🟢 **{campo}: IGUAL**  \n"
-            f"Cadastro: `{exibicao_cadastro}`  \n"
-            f"Aprova Digital: `{exibicao_aprova}`"
-        )
-
-    elif status == "diferente":
-
-        st.error(
-            f"🔴 **{campo}: DIVERGENTE**  \n"
-            f"Cadastro: `{exibicao_cadastro}`  \n"
-            f"Aprova Digital: `{exibicao_aprova}`"
-        )
-
-    else:
-
-        st.warning(
-            f"⚪ **{campo}: NÃO INFORMADO NOS DOIS DOCUMENTOS**  \n"
-            f"Cadastro: `{exibicao_cadastro}`  \n"
-            f"Aprova Digital: `{exibicao_aprova}`"
-        )
-
-
-# ============================================================
-# COMPARAÇÃO DE CNAEs
-# ============================================================
-
-def comparar_cnaes(cadastro, aprova):
-
-    cnaes_cadastro = cadastro["cnaes"]
-    cnae_principal = aprova["cnae_principal"]
-    cnaes_secundarios = aprova["cnaes_secundarios"]
-
-    cnaes_aprova = aprova["cnaes"]
-
-    st.subheader("📊 Comparação dos CNAEs")
-
-    # --------------------------------------------------------
-    # RESUMO
-    # --------------------------------------------------------
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric(
-            "CNAEs no Cadastro",
-            len(cnaes_cadastro)
-        )
-
-    with col2:
-        st.metric(
-            "CNAEs no Aprova",
-            len(cnaes_aprova)
-        )
-
-    with col3:
-        st.metric(
-            "CNAE principal no Aprova",
-            formatar_cnae(cnae_principal)
-            if cnae_principal
-            else "Não informado"
-        )
-
-    # --------------------------------------------------------
-    # CONJUNTOS
-    # --------------------------------------------------------
-
-    set_cadastro = set(cnaes_cadastro)
-    set_aprova = set(cnaes_aprova)
-
-    somente_cadastro = [
-        cnae
-        for cnae in cnaes_cadastro
-        if cnae not in set_aprova
-    ]
-
-    somente_aprova = [
-        cnae
-        for cnae in cnaes_aprova
-        if cnae not in set_cadastro
-    ]
-
-    iguais = [
-        cnae
-        for cnae in cnaes_cadastro
-        if cnae in set_aprova
-    ]
 
     # --------------------------------------------------------
     # CNAE PRINCIPAL
     # --------------------------------------------------------
 
-    if cnae_principal:
+    secao_principal = extrair_bloco(
+        texto,
+        "Atividade Econômica Principal",
+        "Atividades Econômicas Secundárias"
+    )
 
-        if cnae_principal in set_cadastro:
+    for linha in secao_principal.splitlines():
+
+        linha = linha.strip()
+
+        match = padrao_cnae.match(
+            linha
+        )
+
+        if match:
+
+            dados["cnae_principal"] = (
+                normalizar_cnae(
+                    match.group(1)
+                )
+            )
+
+            break
+
+    # --------------------------------------------------------
+    # CNAEs SECUNDÁRIOS
+    # --------------------------------------------------------
+
+    secao_secundaria = extrair_bloco(
+        texto,
+        "Atividades Econômicas Secundárias",
+        "Objeto Social"
+    )
+
+    for linha in secao_secundaria.splitlines():
+
+        linha = linha.strip()
+
+        match = padrao_cnae.match(
+            linha
+        )
+
+        if match:
+
+            codigo = normalizar_cnae(
+                match.group(1)
+            )
+
+            if codigo not in dados[
+                "cnaes_secundarios"
+            ]:
+
+                dados[
+                    "cnaes_secundarios"
+                ].append(codigo)
+
+    # --------------------------------------------------------
+    # LISTA COMPLETA
+    # --------------------------------------------------------
+
+    if dados["cnae_principal"]:
+
+        dados["cnaes"].append(
+            dados["cnae_principal"]
+        )
+
+    for cnae in dados["cnaes_secundarios"]:
+
+        if cnae not in dados["cnaes"]:
+
+            dados["cnaes"].append(
+                cnae
+            )
+
+    return dados
+
+
+# ============================================================
+# COMPARAÇÃO
+# ============================================================
+
+def comparar_campo(
+    valor_cadastro,
+    valor_legalizacao,
+    normalizador
+):
+
+    cadastro = normalizador(
+        valor_cadastro
+    )
+
+    legalizacao = normalizador(
+        valor_legalizacao
+    )
+
+    if not cadastro and not legalizacao:
+
+        return "ambos_nao_informados"
+
+    if not cadastro:
+
+        return "ausente_cadastro"
+
+    if not legalizacao:
+
+        return "ausente_legalizacao"
+
+    if cadastro == legalizacao:
+
+        return "igual"
+
+    return "diferente"
+
+
+# ============================================================
+# EXIBIÇÃO DA COMPARAÇÃO
+# ============================================================
+
+def mostrar_comparacao(
+    titulo,
+    cadastro,
+    legalizacao,
+    normalizador
+):
+
+    status = comparar_campo(
+        cadastro,
+        legalizacao,
+        normalizador
+    )
+
+    st.markdown(
+        f"### {titulo}"
+    )
+
+    col1, col2, col3 = st.columns(
+        [2, 2, 1]
+    )
+
+    with col1:
+
+        st.caption(
+            "Cadastro Municipal"
+        )
+
+        st.write(
+            cadastro
+            if cadastro
+            else "— Não informado —"
+        )
+
+    with col2:
+
+        st.caption(
+            "Legalização"
+        )
+
+        st.write(
+            legalizacao
+            if legalizacao
+            else "— Não informado —"
+        )
+
+    with col3:
+
+        if status == "igual":
 
             st.success(
-                "🟢 **CNAE principal: encontrado no Cadastro**\n\n"
-                f"`{formatar_cnae(cnae_principal)}`"
+                "🟢 IGUAL"
+            )
+
+        elif status == "diferente":
+
+            st.error(
+                "🔴 DIVERGENTE"
+            )
+
+        elif status == "ausente_cadastro":
+
+            st.warning(
+                "🟠 AUSENTE NO CADASTRO"
+            )
+
+        elif status == "ausente_legalizacao":
+
+            st.warning(
+                "🟠 AUSENTE NA LEGALIZAÇÃO"
+            )
+
+        else:
+
+            st.info(
+                "⚪ NÃO INFORMADO"
+            )
+
+    return status
+
+
+# ============================================================
+# COMPARAÇÃO DOS CNAEs
+# ============================================================
+
+def comparar_cnaes(
+    cadastro,
+    legalizacao
+):
+
+    cadastro_set = set(cadastro)
+
+    legalizacao_set = set(
+        legalizacao
+    )
+
+    somente_cadastro = [
+        cnae
+        for cnae in cadastro
+        if cnae not in legalizacao_set
+    ]
+
+    somente_legalizacao = [
+        cnae
+        for cnae in legalizacao
+        if cnae not in cadastro_set
+    ]
+
+    comuns = [
+        cnae
+        for cnae in cadastro
+        if cnae in legalizacao_set
+    ]
+
+    return (
+        comuns,
+        somente_cadastro,
+        somente_legalizacao
+    )
+
+
+# ============================================================
+# EXIBIÇÃO DOS CNAEs
+# ============================================================
+
+def mostrar_cnaes(
+    cadastro,
+    legalizacao
+):
+
+    st.markdown(
+        "## 🏭 Comparação dos CNAEs"
+    )
+
+    (
+        comuns,
+        somente_cadastro,
+        somente_legalizacao
+    ) = comparar_cnaes(
+        cadastro,
+        legalizacao
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        st.metric(
+            "CNAEs no Cadastro",
+            len(cadastro)
+        )
+
+    with col2:
+
+        st.metric(
+            "CNAEs na Legalização",
+            len(legalizacao)
+        )
+
+    with col3:
+
+        st.metric(
+            "CNAEs em comum",
+            len(comuns)
+        )
+
+    # --------------------------------------------------------
+    # CNAE PRINCIPAL
+    # --------------------------------------------------------
+
+    if legalizacao:
+
+        principal = legalizacao[0]
+
+        st.markdown(
+            "### CNAE principal da Legalização"
+        )
+
+        if principal in set(cadastro):
+
+            st.success(
+                f"🟢 {formatar_cnae(principal)} "
+                "— presente no Cadastro Municipal."
             )
 
         else:
 
             st.error(
-                "🔴 **CNAE principal do Aprova não foi encontrado "
-                "no Cadastro**\n\n"
-                f"`{formatar_cnae(cnae_principal)}`"
+                f"🔴 {formatar_cnae(principal)} "
+                "— NÃO encontrado no Cadastro Municipal."
             )
 
-    else:
-
-        st.warning(
-            "⚪ O CNAE principal não foi identificado no Aprova Digital."
-        )
-
     # --------------------------------------------------------
-    # CNAEs AUSENTES NO APROVA
+    # SOMENTE NO CADASTRO
     # --------------------------------------------------------
-
-    st.markdown("### CNAEs do Cadastro que NÃO estão no Aprova")
 
     if somente_cadastro:
 
+        st.error(
+            "🔴 CNAE(s) existente(s) no Cadastro "
+            "Municipal e ausente(s) na Legalização:"
+        )
+
         for cnae in somente_cadastro:
-            st.error(
-                f"🔴 `{formatar_cnae(cnae)}`"
+
+            st.write(
+                f"- **{formatar_cnae(cnae)}**"
             )
 
-    else:
+    # --------------------------------------------------------
+    # SOMENTE NA LEGALIZAÇÃO
+    # --------------------------------------------------------
+
+    if somente_legalizacao:
+
+        st.error(
+            "🔴 CNAE(s) existente(s) na Legalização "
+            "e ausente(s) no Cadastro Municipal:"
+        )
+
+        for cnae in somente_legalizacao:
+
+            st.write(
+                f"- **{formatar_cnae(cnae)}**"
+            )
+
+    # --------------------------------------------------------
+    # TODOS IGUAIS
+    # --------------------------------------------------------
+
+    if (
+        not somente_cadastro
+        and not somente_legalizacao
+    ):
 
         st.success(
-            "🟢 Todos os CNAEs do Cadastro foram encontrados no Aprova."
+            f"🟢 Todos os {len(cadastro)} CNAEs "
+            "do Cadastro Municipal estão presentes "
+            "na Legalização e vice-versa."
         )
 
     # --------------------------------------------------------
-    # CNAEs EXTRAS NO APROVA
+    # TABELA COMPLETA
     # --------------------------------------------------------
 
-    st.markdown("### CNAEs do Aprova que NÃO estão no Cadastro")
+    with st.expander(
+        "📋 Ver comparação completa dos CNAEs"
+    ):
 
-    if somente_aprova:
-
-        for cnae in somente_aprova:
-            st.error(
-                f"🔴 `{formatar_cnae(cnae)}`"
-            )
-
-    else:
-
-        st.success(
-            "🟢 Não existem CNAEs adicionais no Aprova."
+        cadastro_set = set(
+            cadastro
         )
 
-    # --------------------------------------------------------
-    # CNAEs IGUAIS
-    # --------------------------------------------------------
+        legalizacao_set = set(
+            legalizacao
+        )
 
-    with st.expander(
-        f"Ver CNAEs encontrados nos dois documentos ({len(iguais)})"
-    ):
+        todos = []
 
-        for cnae in iguais:
+        for cnae in cadastro:
 
-            if cnae == cnae_principal:
-                identificacao = " — **PRINCIPAL NO APROVA**"
-            elif cnae in cnaes_secundarios:
-                identificacao = " — secundário no Aprova"
-            else:
-                identificacao = ""
+            if cnae not in todos:
 
-            st.write(
-                f"🟢 `{formatar_cnae(cnae)}`{identificacao}"
+                todos.append(cnae)
+
+        for cnae in legalizacao:
+
+            if cnae not in todos:
+
+                todos.append(cnae)
+
+        tabela = []
+
+        for cnae in todos:
+
+            no_cadastro = (
+                cnae in cadastro_set
             )
 
-    # --------------------------------------------------------
-    # LISTA COMPLETA DO APROVA
-    # --------------------------------------------------------
-
-    with st.expander(
-        "Ver lista completa dos CNAEs do Aprova Digital"
-    ):
-
-        if cnae_principal:
-
-            st.write(
-                f"**Principal:** `{formatar_cnae(cnae_principal)}`"
+            na_legalizacao = (
+                cnae in legalizacao_set
             )
 
-        if cnaes_secundarios:
+            if (
+                no_cadastro
+                and na_legalizacao
+            ):
 
-            st.write("**Secundários:**")
-
-            for cnae in cnaes_secundarios:
-
-                st.write(
-                    f"- `{formatar_cnae(cnae)}`"
+                situacao = (
+                    "🟢 Presente nos dois"
                 )
 
-    return {
-        "iguais": iguais,
-        "somente_cadastro": somente_cadastro,
-        "somente_aprova": somente_aprova,
-    }
+            elif no_cadastro:
+
+                situacao = (
+                    "🔴 Somente no Cadastro"
+                )
+
+            else:
+
+                situacao = (
+                    "🔴 Somente na Legalização"
+                )
+
+            tabela.append(
+                {
+                    "CNAE": formatar_cnae(cnae),
+                    "Cadastro": (
+                        "✅"
+                        if no_cadastro
+                        else "❌"
+                    ),
+                    "Legalização": (
+                        "✅"
+                        if na_legalizacao
+                        else "❌"
+                    ),
+                    "Situação": situacao
+                }
+            )
+
+        st.dataframe(
+            tabela,
+            use_container_width=True,
+            hide_index=True
+        )
 
 
 # ============================================================
-# SIDEBAR
+# LIMPAR CAMPOS
 # ============================================================
 
-with st.sidebar:
+def limpar_campos():
 
-    st.title("📂 Processos")
+    st.session_state[
+        "texto_cadastro"
+    ] = ""
 
-    st.markdown(
-        """
-        - [App](https://pmiappnovo-copia.streamlit.app/)
-        - [CV Zona](https://pmiappnovo-copia.streamlit.app/cv_zona)
-        - [Documentação Complementar - ALF](https://pmiappnovo-copia.streamlit.app/documentacao-complementar-ALF)
-        - [Estudo de Impacto de Vizinhança](https://pmiappnovo-copia.streamlit.app/estudo-de-impacto-de-vizinhanca)
-        """
-    )
-
-    st.divider()
-
-    st.caption(
-        "Verificação de preenchimento entre "
-        "Cadastro Municipal e Aprova Digital."
-    )
+    st.session_state[
+        "texto_legalizacao"
+    ] = ""
 
 
 # ============================================================
-# TÍTULO
+# INTERFACE
 # ============================================================
 
-st.title("🏢 Verifica preenchimento - ALF - Aprova Digital")
+st.title(
+    "🔎 Verifica preenchimento - ALF - Legalização"
+)
 
 st.write(
-    "Cole abaixo o conteúdo completo dos dois documentos "
-    "para realizar a comparação automática."
+    "Compare os dados do Cadastro Municipal "
+    "com os dados da Legalização."
 )
 
 
 # ============================================================
-# CAMPOS DE ENTRADA
+# INPUTS
 # ============================================================
 
 col1, col2 = st.columns(2)
 
+
 with col1:
 
-    st.subheader("📄 Cadastro Municipal")
+    st.subheader(
+        "📄 Arquivo 1 — Cadastro Municipal"
+    )
 
-    texto_cadastro = st.text_area(
-        "Cole o Extrato do Cadastro de Contribuinte Pessoa Jurídica",
-        height=500,
-        key="texto_cadastro",
-        placeholder=(
-            "Cole aqui o texto completo do "
-            "Extrato do Cadastro..."
-        )
+    st.text_area(
+        "Cole aqui o conteúdo completo do Cadastro Municipal",
+        height=400,
+        key="texto_cadastro"
     )
 
 
 with col2:
 
-    st.subheader("📄 Aprova Digital")
+    st.subheader(
+        "📄 Arquivo 2 — Legalização"
+    )
 
-    texto_aprova = st.text_area(
-        "Cole o conteúdo completo da Análise do Alvará",
-        height=500,
-        key="texto_aprova",
-        placeholder=(
-            "Cole aqui o texto completo "
-            "do Aprova Digital..."
-        )
+    st.text_area(
+        "Cole aqui o conteúdo completo da Legalização",
+        height=400,
+        key="texto_legalizacao"
     )
 
 
@@ -921,266 +1282,384 @@ with col2:
 # BOTÕES
 # ============================================================
 
-col_botao1, col_botao2, _ = st.columns([1, 1, 4])
+col1, col2 = st.columns(2)
 
-with col_botao1:
+
+with col1:
 
     analisar = st.button(
-        "🔎 Analisar",
+        "🔎 Analisar documentos",
         type="primary",
         use_container_width=True
     )
 
-with col_botao2:
 
-    limpar = st.button(
-        "🗑️ Limpar",
+with col2:
+
+    st.button(
+        "🧹 Limpar",
+        on_click=limpar_campos,
         use_container_width=True
     )
 
 
 # ============================================================
-# LIMPAR
-# ============================================================
-
-if limpar:
-
-    st.session_state["texto_cadastro"] = ""
-    st.session_state["texto_aprova"] = ""
-
-    st.rerun()
-
-
-# ============================================================
-# ANÁLISE
+# PROCESSAMENTO
 # ============================================================
 
 if analisar:
 
-    if not texto_cadastro.strip():
+    texto_cadastro = st.session_state[
+        "texto_cadastro"
+    ]
 
-        st.error(
-            "❌ Cole o conteúdo do Cadastro Municipal."
+    texto_legalizacao = st.session_state[
+        "texto_legalizacao"
+    ]
+
+    if (
+        not texto_cadastro
+        or not texto_legalizacao
+    ):
+
+        st.warning(
+            "⚠️ Informe os dois documentos "
+            "antes de realizar a análise."
         )
-        st.stop()
 
-    if not texto_aprova.strip():
-
-        st.error(
-            "❌ Cole o conteúdo do Aprova Digital."
-        )
-        st.stop()
-
-    # --------------------------------------------------------
-    # EXTRAÇÃO
-    # --------------------------------------------------------
-
-    try:
+    else:
 
         cadastro = extrair_cadastro_municipal(
             texto_cadastro
         )
 
-        aprova = extrair_aprova(
-            texto_aprova
+        legalizacao = extrair_legalizacao(
+            texto_legalizacao
         )
 
-    except Exception as e:
+        # ====================================================
+        # DADOS IDENTIFICADOS
+        # ====================================================
 
-        st.error(
-            "Ocorreu um erro durante a leitura dos documentos."
+        st.divider()
+
+        st.header(
+            "📋 Dados identificados"
         )
 
-        st.exception(e)
+        col1, col2 = st.columns(2)
 
-        st.stop()
 
-    # --------------------------------------------------------
-    # CABEÇALHO DO RESULTADO
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # CADASTRO
+        # ----------------------------------------------------
 
-    st.divider()
+        with col1:
 
-    st.header("📋 Resultado da análise")
-
-    # --------------------------------------------------------
-    # PROTOCOLO
-    # --------------------------------------------------------
-
-    if aprova["protocolo"]:
-
-        st.info(
-            f"**Protocolo Aprova Digital:** "
-            f"`{aprova['protocolo']}`"
-        )
-
-    # --------------------------------------------------------
-    # DADOS CADASTRAIS
-    # --------------------------------------------------------
-
-    st.subheader("1. Dados cadastrais")
-
-    mostrar_comparacao(
-        "CNPJ",
-        cadastro["cnpj"],
-        aprova["cnpj"],
-        normalizador=normalizar_cnpj
-    )
-
-    mostrar_comparacao(
-        "Razão social / Nome empresarial",
-        cadastro["razao_social"],
-        aprova["razao_social"],
-        normalizador=normalizar_texto
-    )
-
-    mostrar_comparacao(
-        "Natureza jurídica",
-        cadastro["natureza_juridica"],
-        aprova["natureza_juridica"],
-        normalizador=normalizar_texto
-    )
-
-    # --------------------------------------------------------
-    # ENDEREÇO
-    # --------------------------------------------------------
-
-    st.subheader("2. Endereço")
-
-    mostrar_comparacao(
-        "Logradouro",
-        cadastro["logradouro"],
-        aprova["logradouro"],
-        normalizador=normalizar_logradouro
-    )
-
-    mostrar_comparacao(
-        "Número",
-        cadastro["numero"],
-        aprova["numero"],
-        normalizador=normalizar_texto
-    )
-
-    mostrar_comparacao(
-        "Bairro",
-        cadastro["bairro"],
-        aprova["bairro"],
-        normalizador=normalizar_bairro
-    )
-
-    mostrar_comparacao(
-        "Complemento",
-        cadastro["complemento"],
-        aprova["complemento"],
-        normalizador=normalizar_complemento
-    )
-
-    mostrar_comparacao(
-        "CEP",
-        cadastro["cep"],
-        aprova["cep"],
-        normalizador=normalizar_cep
-    )
-
-    # --------------------------------------------------------
-    # CNAEs
-    # --------------------------------------------------------
-
-    st.subheader("3. Atividades econômicas")
-
-    resultado_cnae = comparar_cnaes(
-        cadastro,
-        aprova
-    )
-
-    # --------------------------------------------------------
-    # RESUMO FINAL
-    # --------------------------------------------------------
-
-    st.divider()
-
-    st.header("📌 Resumo")
-
-    problemas = []
-
-    # CNPJ
-    if normalizar_cnpj(cadastro["cnpj"]) != normalizar_cnpj(
-        aprova["cnpj"]
-    ):
-        problemas.append("CNPJ")
-
-    # Razão social
-    if normalizar_texto(cadastro["razao_social"]) != normalizar_texto(
-        aprova["razao_social"]
-    ):
-        problemas.append("Razão social")
-
-    # Natureza jurídica
-    if normalizar_texto(cadastro["natureza_juridica"]) != normalizar_texto(
-        aprova["natureza_juridica"]
-    ):
-        problemas.append("Natureza jurídica")
-
-    # Endereço
-    if normalizar_logradouro(cadastro["logradouro"]) != normalizar_logradouro(
-        aprova["logradouro"]
-    ):
-        problemas.append("Logradouro")
-
-    if normalizar_texto(cadastro["numero"]) != normalizar_texto(
-        aprova["numero"]
-    ):
-        problemas.append("Número")
-
-    if normalizar_bairro(cadastro["bairro"]) != normalizar_bairro(
-        aprova["bairro"]
-    ):
-        problemas.append("Bairro")
-
-    if normalizar_complemento(cadastro["complemento"]) != normalizar_complemento(
-        aprova["complemento"]
-    ):
-        problemas.append("Complemento")
-
-    if normalizar_cep(cadastro["cep"]) != normalizar_cep(
-        aprova["cep"]
-    ):
-        problemas.append("CEP")
-
-    # CNAEs
-    if resultado_cnae["somente_cadastro"]:
-        problemas.append(
-            "CNAEs existentes no Cadastro e ausentes no Aprova"
-        )
-
-    if resultado_cnae["somente_aprova"]:
-        problemas.append(
-            "CNAEs existentes no Aprova e ausentes no Cadastro"
-        )
-
-    # --------------------------------------------------------
-    # RESULTADO
-    # --------------------------------------------------------
-
-    if problemas:
-
-        st.error(
-            "🔴 **FORAM ENCONTRADAS DIVERGÊNCIAS**"
-        )
-
-        st.write(
-            "Verifique os seguintes itens:"
-        )
-
-        for problema in problemas:
-
-            st.write(
-                f"- {problema}"
+            st.subheader(
+                "Cadastro Municipal"
             )
 
-    else:
+            st.write(
+                f"**CNPJ:** "
+                f"{cadastro['cnpj'] or 'Não informado'}"
+            )
 
-        st.success(
-            "🟢 **NÃO FORAM ENCONTRADAS DIVERGÊNCIAS "
-            "NOS CAMPOS ANALISADOS.**"
+            st.write(
+                f"**Razão Social:** "
+                f"{cadastro['razao_social'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Natureza Jurídica:** "
+                f"{cadastro['natureza_juridica'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Logradouro:** "
+                f"{cadastro['logradouro'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Número:** "
+                f"{cadastro['numero'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Bairro:** "
+                f"{cadastro['bairro'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Complemento:** "
+                f"{cadastro['complemento'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**CEP:** "
+                f"{cadastro['cep'] or 'Não informado'}"
+            )
+
+
+        # ----------------------------------------------------
+        # LEGALIZAÇÃO
+        # ----------------------------------------------------
+
+        with col2:
+
+            st.subheader(
+                "Legalização"
+            )
+
+            st.write(
+                f"**CNPJ:** "
+                f"{legalizacao['cnpj'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Razão Social:** "
+                f"{legalizacao['razao_social'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Natureza Jurídica:** "
+                f"{legalizacao['natureza_juridica'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Logradouro:** "
+                f"{legalizacao['logradouro'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Número:** "
+                f"{legalizacao['numero'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Bairro:** "
+                f"{legalizacao['bairro'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**Complemento:** "
+                f"{legalizacao['complemento'] or 'Não informado'}"
+            )
+
+            st.write(
+                f"**CEP:** "
+                f"{legalizacao['cep'] or 'Não informado'}"
+            )
+
+
+        # ====================================================
+        # COMPARAÇÃO
+        # ====================================================
+
+        st.divider()
+
+        st.header(
+            "🔍 Comparação dos dados"
         )
+
+        resultados = {}
+
+
+        resultados["CNPJ"] = mostrar_comparacao(
+            "CNPJ",
+            cadastro["cnpj"],
+            legalizacao["cnpj"],
+            normalizar_cep
+        )
+
+
+        resultados["Razão Social"] = mostrar_comparacao(
+            "Razão Social",
+            cadastro["razao_social"],
+            legalizacao["razao_social"],
+            normalizar_razao_social
+        )
+
+
+        resultados["Natureza Jurídica"] = mostrar_comparacao(
+            "Natureza Jurídica",
+            cadastro["natureza_juridica"],
+            legalizacao["natureza_juridica"],
+            normalizar_natureza_juridica
+        )
+
+
+        resultados["Logradouro"] = mostrar_comparacao(
+            "Logradouro",
+            cadastro["logradouro"],
+            legalizacao["logradouro"],
+            normalizar_logradouro
+        )
+
+
+        resultados["Número"] = mostrar_comparacao(
+            "Número",
+            cadastro["numero"],
+            legalizacao["numero"],
+            normalizar_numero
+        )
+
+
+        resultados["Bairro"] = mostrar_comparacao(
+            "Bairro",
+            cadastro["bairro"],
+            legalizacao["bairro"],
+            normalizar_sem_acentos
+        )
+
+
+        resultados["Complemento"] = mostrar_comparacao(
+            "Complemento",
+            cadastro["complemento"],
+            legalizacao["complemento"],
+            normalizar_complemento
+        )
+
+
+        resultados["CEP"] = mostrar_comparacao(
+            "CEP",
+            cadastro["cep"],
+            legalizacao["cep"],
+            normalizar_cep
+        )
+
+
+        # ====================================================
+        # CNAEs
+        # ====================================================
+
+        st.divider()
+
+        mostrar_cnaes(
+            cadastro["cnaes"],
+            legalizacao["cnaes"]
+        )
+
+
+        # ====================================================
+        # RESULTADO FINAL
+        # ====================================================
+
+        st.divider()
+
+        st.header(
+            "📊 Resultado da análise"
+        )
+
+        divergencias = []
+        pendencias = []
+
+
+        for campo, status in resultados.items():
+
+            if status in (
+                "diferente",
+                "ausente_cadastro",
+                "ausente_legalizacao"
+            ):
+
+                divergencias.append(
+                    campo
+                )
+
+            elif status == (
+                "ambos_nao_informados"
+            ):
+
+                pendencias.append(
+                    campo
+                )
+
+
+        (
+            _,
+            somente_cadastro,
+            somente_legalizacao
+        ) = comparar_cnaes(
+            cadastro["cnaes"],
+            legalizacao["cnaes"]
+        )
+
+
+        if (
+            somente_cadastro
+            or somente_legalizacao
+        ):
+
+            divergencias.append(
+                "CNAEs"
+            )
+
+
+        # ----------------------------------------------------
+        # RESULTADO
+        # ----------------------------------------------------
+
+        if divergencias:
+
+            st.error(
+                "🔴 Foram encontradas divergências."
+            )
+
+            st.write(
+                "**Campos com divergência:** "
+                + ", ".join(divergencias)
+            )
+
+        elif pendencias:
+
+            st.warning(
+                "🟠 Não foram encontradas divergências "
+                "nos dados informados, mas existem campos "
+                "não informados nos dois documentos."
+            )
+
+            st.write(
+                "**Campos não informados:** "
+                + ", ".join(pendencias)
+            )
+
+        else:
+
+            st.success(
+                "🟢 Os dados analisados estão consistentes "
+                "entre o Cadastro Municipal e a Legalização."
+            )
+
+
+        # ====================================================
+        # CONFERÊNCIA TÉCNICA
+        # ====================================================
+
+        with st.expander(
+            "🛠️ Conferência técnica da extração"
+        ):
+
+            st.write(
+                "**Quantidade de CNAEs no Cadastro:**",
+                len(cadastro["cnaes"])
+            )
+
+            st.write(
+                [
+                    formatar_cnae(cnae)
+                    for cnae in cadastro["cnaes"]
+                ]
+            )
+
+            st.write(
+                "**Quantidade de CNAEs na Legalização:**",
+                len(legalizacao["cnaes"])
+            )
+
+            st.write(
+                [
+                    formatar_cnae(cnae)
+                    for cnae in legalizacao["cnaes"]
+                ]
+            )
