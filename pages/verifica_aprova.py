@@ -33,27 +33,42 @@ st.sidebar.markdown(
 
 
 # ============================================================
-# NORMALIZAÇÃO
+# FUNÇÕES DE NORMALIZAÇÃO
 # ============================================================
 
 def normalizar_texto(valor):
+
     if valor is None:
         return ""
 
     valor = str(valor)
-    valor = unicodedata.normalize("NFKC", valor)
-    valor = re.sub(r"\s+", " ", valor)
+
+    valor = unicodedata.normalize(
+        "NFKC",
+        valor
+    )
+
+    valor = re.sub(
+        r"\s+",
+        " ",
+        valor
+    )
 
     return valor.strip().upper()
 
 
 def normalizar_sem_acentos(valor):
+
     valor = normalizar_texto(valor)
 
-    valor = unicodedata.normalize("NFD", valor)
+    valor = unicodedata.normalize(
+        "NFD",
+        valor
+    )
 
     return "".join(
-        c for c in valor
+        c
+        for c in valor
         if unicodedata.category(c) != "Mn"
     )
 
@@ -121,7 +136,11 @@ def normalizar_numero(valor):
         str(valor)
     )
 
-    return match.group(0) if match else ""
+    return (
+        match.group(0)
+        if match
+        else ""
+    )
 
 
 def normalizar_cep(valor):
@@ -138,7 +157,9 @@ def normalizar_cep(valor):
 
 def normalizar_complemento(valor):
 
-    valor = normalizar_sem_acentos(valor)
+    valor = normalizar_sem_acentos(
+        valor
+    )
 
     valor = re.sub(
         r"[^A-Z0-9 ]",
@@ -169,7 +190,9 @@ def normalizar_cnae(valor):
 
 def formatar_cnae(codigo):
 
-    codigo = normalizar_cnae(codigo)
+    codigo = normalizar_cnae(
+        codigo
+    )
 
     if len(codigo) != 7:
         return codigo
@@ -189,12 +212,18 @@ def formatar_cnae(codigo):
 # EXTRAÇÃO DE BLOCOS
 # ============================================================
 
-def extrair_bloco(texto, inicio, fim=None):
+def extrair_bloco(
+    texto,
+    inicio,
+    fim=None
+):
 
     if not texto:
         return ""
 
-    pos_inicio = texto.lower().find(
+    texto_lower = texto.lower()
+
+    pos_inicio = texto_lower.find(
         inicio.lower()
     )
 
@@ -205,17 +234,20 @@ def extrair_bloco(texto, inicio, fim=None):
 
     if fim:
 
-        pos_fim = texto.lower().find(
+        pos_fim = texto_lower.find(
             fim.lower(),
             pos_inicio
         )
 
         if pos_fim != -1:
+
             return texto[
                 pos_inicio:pos_fim
             ]
 
-    return texto[pos_inicio:]
+    return texto[
+        pos_inicio:
+    ]
 
 
 # ============================================================
@@ -266,48 +298,532 @@ def extrair_cnaes_cadastro(texto):
     if not texto:
         return cnaes
 
-    for linha in texto.splitlines():
+    # --------------------------------------------------------
+    # Isola somente a seção de CNAEs.
+    # --------------------------------------------------------
 
-        linha = linha.strip()
+    bloco = extrair_bloco(
+        texto,
+        "Atividade Econômica CNAE",
+        "Atividade Econômica Atual"
+    )
 
-        # O CNAE do Cadastro aparece no início da linha
-        # com exatamente 7 dígitos, seguido de espaço.
-        #
-        # Exemplo válido:
-        # 4693100 COMÉRCIO ATACADISTA...
-        #
-        # Não aceitar:
-        # 1570 GALPAO:3;SALA:93
-        #
-        # Isso impede que o endereço seja interpretado
-        # como um CNAE.
+    if not bloco:
 
-        match = re.match(
-            r"^(\d{7})\s+\S",
-            linha
+        bloco = extrair_bloco(
+            texto,
+            "Atividade Econômica CNAE"
         )
 
-        if not match:
-            continue
+    if not bloco:
+        return cnaes
 
-        codigo = match.group(1)
+    # --------------------------------------------------------
+    # Formato tabular:
+    #
+    # 7112000 | SERVIÇOS DE ENGENHARIA
+    #
+    # Também aceita:
+    #
+    # | 7112000 | SERVIÇOS DE ENGENHARIA
+    # --------------------------------------------------------
 
-        if len(codigo) != 7:
-            continue
+    padroes = [
 
-        codigo = normalizar_cnae(codigo)
+        r"(?:^|\||\n)\s*(\d{7})\s*(?=\||\n|$)",
 
-        if codigo not in cnaes:
-            cnaes.append(codigo)
+        r"^\s*(\d{7})\s+\S"
+    ]
+
+    for padrao in padroes:
+
+        for match in re.finditer(
+            padrao,
+            bloco,
+            flags=re.MULTILINE
+        ):
+
+            codigo = normalizar_cnae(
+                match.group(1)
+            )
+
+            if (
+                len(codigo) == 7
+                and codigo not in cnaes
+            ):
+
+                cnaes.append(
+                    codigo
+                )
 
     return cnaes
 
 
 # ============================================================
-# EXTRAÇÃO DO CADASTRO MUNICIPAL
+# EXTRAÇÃO DO ENDEREÇO DO CADASTRO
 # ============================================================
 
-def extrair_cadastro_municipal(texto):
+def extrair_endereco_cadastro(
+    texto
+):
+
+    dados = {
+        "logradouro": "",
+        "numero": "",
+        "bairro": "",
+        "complemento": "",
+        "cep": ""
+    }
+
+    # --------------------------------------------------------
+    # Localiza o primeiro "Endereço" depois da identificação.
+    # --------------------------------------------------------
+
+    pos_identificacao = texto.lower().find(
+        "identificação do contribuinte"
+    )
+
+    if pos_identificacao >= 0:
+
+        texto_endereco = texto[
+            pos_identificacao:
+        ]
+
+    else:
+
+        texto_endereco = texto
+
+    bloco = extrair_bloco(
+        texto_endereco,
+        "Endereço",
+        "Endereço Correspondência"
+    )
+
+    if not bloco:
+        return dados
+
+    # ========================================================
+    # CASO 1 - DOCUMENTO COM RÓTULOS E VALORES NA MESMA LINHA
+    # ========================================================
+
+    match = re.search(
+        r"Logradouro\s*:\s*([^\n\r|]+)",
+        bloco,
+        flags=re.IGNORECASE
+    )
+
+    if match and match.group(1).strip():
+
+        dados["logradouro"] = (
+            match.group(1).strip()
+        )
+
+    match = re.search(
+        r"N[úu]mero\s*:\s*([^\n\r|]+)",
+        bloco,
+        flags=re.IGNORECASE
+    )
+
+    if match and match.group(1).strip():
+
+        candidato = match.group(1).strip()
+
+        if re.fullmatch(
+            r"\d+",
+            candidato
+        ):
+
+            dados["numero"] = candidato
+
+    match = re.search(
+        r"Bairro\s*:\s*([^\n\r|]+)",
+        bloco,
+        flags=re.IGNORECASE
+    )
+
+    if match and match.group(1).strip():
+
+        dados["bairro"] = (
+            match.group(1).strip()
+        )
+
+    match = re.search(
+        r"Complemento\s*:\s*([^\n\r|]+)",
+        bloco,
+        flags=re.IGNORECASE
+    )
+
+    if match and match.group(1).strip():
+
+        dados["complemento"] = (
+            match.group(1).strip()
+        )
+
+    match = re.search(
+        r"CEP\s*:\s*(\d{5}-\d{3})",
+        bloco,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+
+        dados["cep"] = (
+            match.group(1)
+        )
+
+    # ========================================================
+    # CASO 2 - EXTRAÇÃO TABULAR DO PDF
+    # ========================================================
+
+    linhas = [
+        linha.strip()
+        for linha in bloco.splitlines()
+        if linha.strip()
+    ]
+
+    # --------------------------------------------------------
+    # CEP
+    # --------------------------------------------------------
+
+    ceps = re.findall(
+        r"\b\d{5}-\d{3}\b",
+        bloco
+    )
+
+    if ceps:
+
+        dados["cep"] = ceps[-1]
+
+    # --------------------------------------------------------
+    # Procura especificamente a sequência dos rótulos:
+    #
+    # Logradouro:
+    # Número:
+    # Bairro:
+    # Complemento:
+    # CEP:
+    #
+    # e então analisa os valores que aparecem posteriormente.
+    # --------------------------------------------------------
+
+    indice_logradouro = None
+
+    for i, linha in enumerate(linhas):
+
+        if normalizar_texto(
+            linha
+        ) in (
+            "LOGRADOURO:",
+            "LOGRADOURO"
+        ):
+
+            indice_logradouro = i
+            break
+
+    if indice_logradouro is None:
+
+        return dados
+
+    # --------------------------------------------------------
+    # Localiza os quatro rótulos seguintes.
+    # --------------------------------------------------------
+
+    indices_rotulos = {}
+
+    for i in range(
+        indice_logradouro,
+        min(
+            indice_logradouro + 10,
+            len(linhas)
+        )
+    ):
+
+        texto_linha = normalizar_texto(
+            linhas[i]
+        )
+
+        if texto_linha in (
+            "LOGRADOURO:",
+            "LOGRADOURO"
+        ):
+
+            indices_rotulos[
+                "logradouro"
+            ] = i
+
+        elif texto_linha in (
+            "NÚMERO:",
+            "NUMERO:",
+            "NÚMERO",
+            "NUMERO"
+        ):
+
+            indices_rotulos[
+                "numero"
+            ] = i
+
+        elif texto_linha in (
+            "BAIRRO:",
+            "BAIRRO"
+        ):
+
+            indices_rotulos[
+                "bairro"
+            ] = i
+
+        elif texto_linha in (
+            "COMPLEMENTO:",
+            "COMPLEMENTO"
+        ):
+
+            indices_rotulos[
+                "complemento"
+            ] = i
+
+        elif texto_linha in (
+            "CEP:",
+            "CEP"
+        ):
+
+            indices_rotulos[
+                "cep"
+            ] = i
+
+    if len(indices_rotulos) < 4:
+
+        return dados
+
+    # --------------------------------------------------------
+    # Os valores podem aparecer depois de todos os rótulos.
+    #
+    # Exemplo real:
+    #
+    # Logradouro:
+    # Número:
+    # Bairro:
+    # Complemento:
+    # CEP:
+    #
+    # 88303-040
+    # 2 ANDAR SALA 03 BOX 56
+    # 657
+    # CENTRO
+    # ALMIRANTE BARROSO
+    # --------------------------------------------------------
+
+    indice_ultimo_rotulo = max(
+        indices_rotulos.values()
+    )
+
+    valores = []
+
+    for linha in linhas[
+        indice_ultimo_rotulo + 1:
+    ]:
+
+        # Não avançar para outra seção.
+        if normalizar_texto(
+            linha
+        ) in (
+            "ENDEREÇO CORRESPONDÊNCIA",
+            "INSCRIÇÃO MUNICIPAL",
+            "CONTADOR",
+            "NOME:",
+            "IM:",
+            "TELEFONE:",
+            "CORREIO ELETRÔNICO:"
+        ):
+
+            break
+
+        if linha.endswith(":"):
+            continue
+
+        valores.append(
+            linha
+        )
+
+    # --------------------------------------------------------
+    # Identifica CEP
+    # --------------------------------------------------------
+
+    valores_sem_cep = []
+
+    for valor in valores:
+
+        if re.fullmatch(
+            r"\d{5}-\d{3}",
+            valor
+        ):
+
+            dados["cep"] = valor
+
+        else:
+
+            valores_sem_cep.append(
+                valor
+            )
+
+    valores = valores_sem_cep
+
+    # --------------------------------------------------------
+    # Identifica número ISOLADO.
+    #
+    # Isso é fundamental:
+    #
+    # 657              -> número
+    #
+    # 2 ANDAR SALA...  -> complemento
+    #
+    # Portanto não usamos simplesmente o primeiro número.
+    # --------------------------------------------------------
+
+    numero_encontrado = ""
+
+    for valor in valores:
+
+        if re.fullmatch(
+            r"\d+",
+            valor
+        ):
+
+            numero_encontrado = valor
+            break
+
+    if numero_encontrado:
+
+        dados["numero"] = (
+            numero_encontrado
+        )
+
+    # --------------------------------------------------------
+    # Identifica complemento
+    # --------------------------------------------------------
+
+    complemento_encontrado = ""
+
+    palavras_complemento = (
+        "ANDAR",
+        "SALA",
+        "BOX",
+        "GALPAO",
+        "GALPÃO",
+        "BLOCO",
+        "APTO",
+        "APT",
+        "LOJA",
+        "FUNDOS",
+        "CONJUNTO",
+        "CJ"
+    )
+
+    for valor in valores:
+
+        if valor == numero_encontrado:
+            continue
+
+        normalizado = (
+            normalizar_sem_acentos(
+                valor
+            )
+        )
+
+        if any(
+            palavra in normalizado
+            for palavra in palavras_complemento
+        ):
+
+            complemento_encontrado = valor
+
+            # Remove somente o número inicial
+            # quando ele faz parte do complemento.
+            if (
+                numero_encontrado
+                and complemento_encontrado.startswith(
+                    numero_encontrado + " "
+                )
+            ):
+
+                complemento_encontrado = (
+                    complemento_encontrado[
+                        len(numero_encontrado):
+                    ].strip()
+                )
+
+            break
+
+    if complemento_encontrado:
+
+        dados["complemento"] = (
+            complemento_encontrado
+        )
+
+    # --------------------------------------------------------
+    # Os valores restantes normalmente são:
+    #
+    # CENTRO
+    # ALMIRANTE BARROSO
+    #
+    # Portanto:
+    # penúltimo = bairro
+    # último = logradouro
+    # --------------------------------------------------------
+
+    restantes = []
+
+    for valor in valores:
+
+        if valor == numero_encontrado:
+            continue
+
+        if valor == complemento_encontrado:
+            continue
+
+        restantes.append(
+            valor
+        )
+
+    if len(restantes) >= 2:
+
+        dados["bairro"] = (
+            restantes[-2]
+        )
+
+        dados["logradouro"] = (
+            restantes[-1]
+        )
+
+    elif len(restantes) == 1:
+
+        if not dados["logradouro"]:
+
+            dados["logradouro"] = (
+                restantes[0]
+            )
+
+    # --------------------------------------------------------
+    # Remove eventual "RUA" do início para comparação.
+    # --------------------------------------------------------
+
+    if dados["logradouro"]:
+
+        dados["logradouro"] = re.sub(
+            r"^(RUA|R\.|AVENIDA|AV\.|ALAMEDA|AL\.|TRAVESSA|TV\.)\s+",
+            "",
+            dados["logradouro"],
+            flags=re.IGNORECASE
+        ).strip()
+
+    return dados
+
+
+# ============================================================
+# EXTRAÇÃO COMPLETA DO CADASTRO
+# ============================================================
+
+def extrair_cadastro_municipal(
+    texto
+):
 
     dados = {
         "cnpj": "",
@@ -328,10 +844,12 @@ def extrair_cadastro_municipal(texto):
     # CNPJ
     # --------------------------------------------------------
 
-    dados["cnpj"] = extrair_cnpj(texto)
+    dados["cnpj"] = (
+        extrair_cnpj(texto)
+    )
 
     # --------------------------------------------------------
-    # IDENTIFICAÇÃO DO CONTRIBUINTE
+    # RAZÃO SOCIAL
     # --------------------------------------------------------
 
     bloco_identificacao = extrair_bloco(
@@ -348,34 +866,46 @@ def extrair_cadastro_municipal(texto):
             "Endereço"
         )
 
-    linhas_identificacao = [
+    linhas = [
         linha.strip()
         for linha in bloco_identificacao.splitlines()
         if linha.strip()
     ]
 
     # --------------------------------------------------------
-    # RAZÃO SOCIAL
+    # Procura o valor do Nome.
     # --------------------------------------------------------
 
-    indice_email = None
+    indice_nome = None
 
-    for i, linha in enumerate(linhas_identificacao):
+    for i, linha in enumerate(linhas):
 
-        if normalizar_texto(linha) == "CORREIO ELETRÔNICO:":
+        if normalizar_texto(
+            linha
+        ) in (
+            "NOME:",
+            "NOME"
+        ):
 
-            indice_email = i
+            indice_nome = i
             break
 
-    if indice_email is not None:
+    if indice_nome is not None:
 
         candidatos = []
 
-        for linha in linhas_identificacao[
-            indice_email + 1:
+        for linha in linhas[
+            indice_nome + 1:
         ]:
 
-            if normalizar_texto(linha) == "ENDEREÇO":
+            if normalizar_texto(
+                linha
+            ) in (
+                "NOME FANTASIA:",
+                "DESC. NATUREZA JURÍDICA:",
+                "CORREIO ELETRÔNICO:"
+            ):
+
                 break
 
             if "@" in linha:
@@ -387,41 +917,26 @@ def extrair_cadastro_municipal(texto):
             ):
                 continue
 
-            if re.search(
-                r"\d{5}-\d{3}",
-                linha
-            ):
-                continue
+            if linha:
 
-            if re.search(
-                r"\d{2}/\d{2}/\d{4}",
-                linha
-            ):
-                continue
-
-            if len(
-                re.sub(
-                    r"[^A-Za-zÀ-ÿ]",
-                    "",
+                candidatos.append(
                     linha
                 )
-            ) < 3:
-                continue
-
-            candidatos.append(linha)
 
         if candidatos:
 
-            dados["razao_social"] = candidatos[0]
+            dados["razao_social"] = (
+                candidatos[0]
+            )
 
     # --------------------------------------------------------
-    # FALLBACK DA RAZÃO SOCIAL
+    # FALLBACK RAZÃO SOCIAL
     # --------------------------------------------------------
 
     if not dados["razao_social"]:
 
         match = re.search(
-            r"\b([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ0-9&.\- ]{3,}\s+S\.?\s*A\.?)\b",
+            r"\b([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ0-9&.\- ]{3,}\s+(?:LTDA|S\.?\s*A\.?|EIRELI|ME|EPP))\b",
             texto,
             flags=re.IGNORECASE
         )
@@ -440,6 +955,8 @@ def extrair_cadastro_municipal(texto):
 
         r"\b(\d{3}-\d)\s+Sociedade\s+Anônima\s+Fechada\b",
 
+        r"\b(\d{3}-\d)\s+Sociedade\s+Empresária\s+Limitada\b",
+
         r"\b(\d{3}-\d)\s+([A-Za-zÀ-ÿ][^\n\r]+)"
     ]
 
@@ -453,15 +970,19 @@ def extrair_cadastro_municipal(texto):
 
         if match:
 
-            if len(match.groups()) == 1:
+            if len(
+                match.groups()
+            ) == 1:
 
-                dados["natureza_juridica"] = (
-                    match.group(1)
-                )
+                dados[
+                    "natureza_juridica"
+                ] = match.group(1)
 
             else:
 
-                dados["natureza_juridica"] = (
+                dados[
+                    "natureza_juridica"
+                ] = (
                     match.group(1)
                     + " "
                     + match.group(2).strip()
@@ -473,114 +994,24 @@ def extrair_cadastro_municipal(texto):
     # ENDEREÇO
     # --------------------------------------------------------
 
-    bloco_endereco = extrair_bloco(
-        texto,
-        "Endereço",
-        "Endereço Correspondência"
+    endereco = (
+        extrair_endereco_cadastro(
+            texto
+        )
     )
 
-    if bloco_endereco:
-
-        linhas_endereco = [
-            linha.strip()
-            for linha in bloco_endereco.splitlines()
-            if linha.strip()
-        ]
-
-        # ----------------------------------------------------
-        # CEP
-        # ----------------------------------------------------
-
-        ceps = re.findall(
-            r"\b\d{5}-\d{3}\b",
-            bloco_endereco
-        )
-
-        if ceps:
-
-            dados["cep"] = ceps[0]
-
-        # ----------------------------------------------------
-        # NÚMERO E COMPLEMENTO
-        # ----------------------------------------------------
-
-        indice_numero = None
-
-        for i, linha in enumerate(linhas_endereco):
-
-            match_numero = re.match(
-                r"^(\d+)(?:\s+(.*))?$",
-                linha
-            )
-
-            if match_numero:
-
-                dados["numero"] = (
-                    match_numero.group(1)
-                )
-
-                dados["complemento"] = (
-                    match_numero.group(2) or ""
-                ).strip()
-
-                indice_numero = i
-
-                break
-
-        # ----------------------------------------------------
-        # BAIRRO E LOGRADOURO
-        # ----------------------------------------------------
-
-        if indice_numero is not None:
-
-            candidatos = []
-
-            for linha in linhas_endereco[
-                indice_numero + 1:
-            ]:
-
-                if not linha:
-                    continue
-
-                if linha.endswith(":"):
-                    continue
-
-                if "@" in linha:
-                    continue
-
-                if re.fullmatch(
-                    r"\d{5}-\d{3}",
-                    linha
-                ):
-                    continue
-
-                quantidade_letras = len(
-                    re.sub(
-                        r"[^A-Za-zÀ-ÿ]",
-                        "",
-                        linha
-                    )
-                )
-
-                if quantidade_letras < 3:
-                    continue
-
-                candidatos.append(linha)
-
-            if candidatos:
-
-                dados["bairro"] = candidatos[0]
-
-            if len(candidatos) >= 2:
-
-                dados["logradouro"] = candidatos[1]
+    dados.update(
+        endereco
+    )
 
     # --------------------------------------------------------
     # CNAEs
     # --------------------------------------------------------
 
     dados["cnaes"] = (
-        extrair_cnaes_cadastro(texto)
+        extrair_cnaes_cadastro(
+            texto
+        )
     )
 
     return dados
@@ -590,7 +1021,9 @@ def extrair_cadastro_municipal(texto):
 # EXTRAÇÃO DA LEGALIZAÇÃO
 # ============================================================
 
-def extrair_legalizacao(texto):
+def extrair_legalizacao(
+    texto
+):
 
     dados = {
         "cnpj": "",
@@ -613,7 +1046,9 @@ def extrair_legalizacao(texto):
     # CNPJ
     # --------------------------------------------------------
 
-    dados["cnpj"] = extrair_cnpj(texto)
+    dados["cnpj"] = (
+        extrair_cnpj(texto)
+    )
 
     # --------------------------------------------------------
     # RAZÃO SOCIAL
@@ -648,7 +1083,7 @@ def extrair_legalizacao(texto):
         )
 
     # --------------------------------------------------------
-    # LOGRADOURO + NÚMERO
+    # LOGRADOURO E NÚMERO
     # --------------------------------------------------------
 
     match = re.search(
@@ -674,13 +1109,16 @@ def extrair_legalizacao(texto):
             )
 
             dados["logradouro"] = (
-                endereco[:numero_match.start()]
-                .rstrip(" ,")
+                endereco[
+                    :numero_match.start()
+                ].rstrip(" ,")
             )
 
         else:
 
-            dados["logradouro"] = endereco
+            dados["logradouro"] = (
+                endereco
+            )
 
     # --------------------------------------------------------
     # COMPLEMENTO
@@ -758,10 +1196,10 @@ def extrair_legalizacao(texto):
 
         if match:
 
-            dados["cnae_principal"] = (
-                normalizar_cnae(
-                    match.group(1)
-                )
+            dados[
+                "cnae_principal"
+            ] = normalizar_cnae(
+                match.group(1)
             )
 
             break
@@ -791,15 +1229,19 @@ def extrair_legalizacao(texto):
             )
 
             if codigo not in (
-                dados["cnaes_secundarios"]
+                dados[
+                    "cnaes_secundarios"
+                ]
             ):
 
                 dados[
                     "cnaes_secundarios"
-                ].append(codigo)
+                ].append(
+                    codigo
+                )
 
     # --------------------------------------------------------
-    # LISTA COMPLETA DE CNAEs
+    # LISTA COMPLETA
     # --------------------------------------------------------
 
     if dados["cnae_principal"]:
@@ -808,7 +1250,9 @@ def extrair_legalizacao(texto):
             dados["cnae_principal"]
         )
 
-    for cnae in dados["cnaes_secundarios"]:
+    for cnae in (
+        dados["cnaes_secundarios"]
+    ):
 
         if cnae not in dados["cnaes"]:
 
@@ -949,7 +1393,9 @@ def comparar_cnaes(
     legalizacao
 ):
 
-    cadastro_set = set(cadastro)
+    cadastro_set = set(
+        cadastro
+    )
 
     legalizacao_set = set(
         legalizacao
@@ -1052,7 +1498,7 @@ def mostrar_cnaes(
             )
 
     # --------------------------------------------------------
-    # SOMENTE NO CADASTRO
+    # CNAEs somente no Cadastro
     # --------------------------------------------------------
 
     if somente_cadastro:
@@ -1069,7 +1515,7 @@ def mostrar_cnaes(
             )
 
     # --------------------------------------------------------
-    # SOMENTE NA LEGALIZAÇÃO
+    # CNAEs somente na Legalização
     # --------------------------------------------------------
 
     if somente_legalizacao:
@@ -1165,7 +1611,9 @@ def mostrar_cnaes(
 
             tabela.append(
                 {
-                    "CNAE": formatar_cnae(cnae),
+                    "CNAE": formatar_cnae(
+                        cnae
+                    ),
                     "Cadastro": (
                         "✅"
                         if no_cadastro
@@ -1188,7 +1636,7 @@ def mostrar_cnaes(
 
 
 # ============================================================
-# BOTÃO LIMPAR
+# LIMPAR CAMPOS
 # ============================================================
 
 def limpar_campos():
@@ -1217,7 +1665,7 @@ st.write(
 
 
 # ============================================================
-# CAMPOS DE INPUT
+# INPUTS
 # ============================================================
 
 col1, col2 = st.columns(2)
@@ -1300,12 +1748,16 @@ if analisar:
 
     else:
 
-        cadastro = extrair_cadastro_municipal(
-            texto_cadastro
+        cadastro = (
+            extrair_cadastro_municipal(
+                texto_cadastro
+            )
         )
 
-        legalizacao = extrair_legalizacao(
-            texto_legalizacao
+        legalizacao = (
+            extrair_legalizacao(
+                texto_legalizacao
+            )
         )
 
         # ====================================================
@@ -1421,7 +1873,7 @@ if analisar:
             )
 
         # ====================================================
-        # COMPARAÇÃO
+        # COMPARAÇÃO DOS DADOS
         # ====================================================
 
         st.divider()
@@ -1432,60 +1884,76 @@ if analisar:
 
         resultados = {}
 
-        resultados["CNPJ"] = mostrar_comparacao(
-            "CNPJ",
-            cadastro["cnpj"],
-            legalizacao["cnpj"],
-            normalizar_cep
+        resultados["CNPJ"] = (
+            mostrar_comparacao(
+                "CNPJ",
+                cadastro["cnpj"],
+                legalizacao["cnpj"],
+                normalizar_cep
+            )
         )
 
-        resultados["Razão Social"] = mostrar_comparacao(
-            "Razão Social",
-            cadastro["razao_social"],
-            legalizacao["razao_social"],
-            normalizar_razao_social
+        resultados["Razão Social"] = (
+            mostrar_comparacao(
+                "Razão Social",
+                cadastro["razao_social"],
+                legalizacao["razao_social"],
+                normalizar_razao_social
+            )
         )
 
-        resultados["Natureza Jurídica"] = mostrar_comparacao(
-            "Natureza Jurídica",
-            cadastro["natureza_juridica"],
-            legalizacao["natureza_juridica"],
-            normalizar_natureza_juridica
+        resultados["Natureza Jurídica"] = (
+            mostrar_comparacao(
+                "Natureza Jurídica",
+                cadastro["natureza_juridica"],
+                legalizacao["natureza_juridica"],
+                normalizar_natureza_juridica
+            )
         )
 
-        resultados["Logradouro"] = mostrar_comparacao(
-            "Logradouro",
-            cadastro["logradouro"],
-            legalizacao["logradouro"],
-            normalizar_logradouro
+        resultados["Logradouro"] = (
+            mostrar_comparacao(
+                "Logradouro",
+                cadastro["logradouro"],
+                legalizacao["logradouro"],
+                normalizar_logradouro
+            )
         )
 
-        resultados["Número"] = mostrar_comparacao(
-            "Número",
-            cadastro["numero"],
-            legalizacao["numero"],
-            normalizar_numero
+        resultados["Número"] = (
+            mostrar_comparacao(
+                "Número",
+                cadastro["numero"],
+                legalizacao["numero"],
+                normalizar_numero
+            )
         )
 
-        resultados["Bairro"] = mostrar_comparacao(
-            "Bairro",
-            cadastro["bairro"],
-            legalizacao["bairro"],
-            normalizar_sem_acentos
+        resultados["Bairro"] = (
+            mostrar_comparacao(
+                "Bairro",
+                cadastro["bairro"],
+                legalizacao["bairro"],
+                normalizar_sem_acentos
+            )
         )
 
-        resultados["Complemento"] = mostrar_comparacao(
-            "Complemento",
-            cadastro["complemento"],
-            legalizacao["complemento"],
-            normalizar_complemento
+        resultados["Complemento"] = (
+            mostrar_comparacao(
+                "Complemento",
+                cadastro["complemento"],
+                legalizacao["complemento"],
+                normalizar_complemento
+            )
         )
 
-        resultados["CEP"] = mostrar_comparacao(
-            "CEP",
-            cadastro["cep"],
-            legalizacao["cep"],
-            normalizar_cep
+        resultados["CEP"] = (
+            mostrar_comparacao(
+                "CEP",
+                cadastro["cep"],
+                legalizacao["cep"],
+                normalizar_cep
+            )
         )
 
         # ====================================================
@@ -1512,7 +1980,9 @@ if analisar:
         divergencias = []
         pendencias = []
 
-        for campo, status in resultados.items():
+        for campo, status in (
+            resultados.items()
+        ):
 
             if status in (
                 "diferente",
@@ -1550,10 +2020,6 @@ if analisar:
                 "CNAEs"
             )
 
-        # ----------------------------------------------------
-        # RESULTADO FINAL
-        # ----------------------------------------------------
-
         if divergencias:
 
             st.error(
@@ -1562,7 +2028,9 @@ if analisar:
 
             st.write(
                 "**Campos com divergência:** "
-                + ", ".join(divergencias)
+                + ", ".join(
+                    divergencias
+                )
             )
 
         elif pendencias:
@@ -1575,7 +2043,9 @@ if analisar:
 
             st.write(
                 "**Campos não informados:** "
-                + ", ".join(pendencias)
+                + ", ".join(
+                    pendencias
+                )
             )
 
         else:
@@ -1615,4 +2085,29 @@ if analisar:
                     formatar_cnae(cnae)
                     for cnae in legalizacao["cnaes"]
                 ]
+            )
+
+            st.write(
+                "**Número extraído do Cadastro:**",
+                cadastro["numero"]
+            )
+
+            st.write(
+                "**Logradouro extraído do Cadastro:**",
+                cadastro["logradouro"]
+            )
+
+            st.write(
+                "**Bairro extraído do Cadastro:**",
+                cadastro["bairro"]
+            )
+
+            st.write(
+                "**Complemento extraído do Cadastro:**",
+                cadastro["complemento"]
+            )
+
+            st.write(
+                "**CEP extraído do Cadastro:**",
+                cadastro["cep"]
             )
