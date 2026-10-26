@@ -821,6 +821,255 @@ def extrair_endereco_cadastro(
 # EXTRAÇÃO COMPLETA DO CADASTRO
 # ============================================================
 
+# ============================================================
+# EXTRAÇÃO E COMPARAÇÃO DE SÓCIOS / ADMINISTRADORES
+# ============================================================
+
+def normalizar_nome_pessoa(nome):
+    """Normaliza nomes para comparação, preservando o original na exibição."""
+    nome = normalizar_sem_acentos(nome)
+    nome = re.sub(r"[^A-Z0-9 ]", " ", nome)
+    return re.sub(r"\s+", " ", nome).strip()
+
+
+def normalizar_documento_pessoa(documento):
+    return re.sub(r"\D", "", str(documento or ""))
+
+
+def extrair_socios_cadastro(texto):
+    """Extrai os registros da seção Sócios do Cadastro Municipal.
+
+    Delimita a leitura antes da seção Responsáveis para não contar o mesmo
+    sócio novamente quando ele também aparece como responsável.
+    """
+    socios = []
+    if not texto:
+        return socios
+
+    bloco = extrair_bloco(texto, "Sócios", "Responsáveis")
+    if not bloco:
+        return socios
+
+    qualificacoes = [
+        "sócio-administrador", "socia-administradora",
+        "sócia-administradora", "sócio administrador",
+        "sócia administradora", "administrador",
+        "administradora", "sócio", "sócia", "titular",
+        "representante legal", "administrador e sócio",
+    ]
+    qualificacoes_regex = "|".join(
+        re.escape(q) for q in sorted(qualificacoes, key=len, reverse=True)
+    )
+
+    for linha in bloco.splitlines():
+        linha = linha.strip().strip("|")
+        if not linha:
+            continue
+        upper = normalizar_sem_acentos(linha)
+        if "NUMERO NOME PARTICIPACAO QUALIFICACAO" in upper or upper in ("NOME", "SOCIOS"):
+            continue
+
+        # Identificador pessoal (CPF) ou empresarial (CNPJ), com ou sem máscara.
+        doc_match = re.search(
+            r"(?<!\d)(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11}|\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14})(?!\d)",
+            linha,
+        )
+        if not doc_match:
+            continue
+
+        documento = normalizar_documento_pessoa(doc_match.group(1))
+        restante = (linha[:doc_match.start()] + " " + linha[doc_match.end():]).strip()
+        qual_match = re.search(rf"\b({qualificacoes_regex})\s*$", restante, flags=re.IGNORECASE)
+        if qual_match:
+            qualificacao = qual_match.group(1).strip()
+            antes_qualificacao = restante[:qual_match.start()].strip()
+        else:
+            # Fallback para qualificações não previstas: considera os últimos
+            # termos após a participação, sem transformar o cabeçalho em sócio.
+            qualificacao = ""
+            antes_qualificacao = restante
+
+        participacao = ""
+        part_match = re.search(r"(?:^|\s)(\d{1,3}(?:[.,]\d{1,2})?\s*%?)(?:\s|$)", antes_qualificacao)
+        if part_match:
+            participacao = part_match.group(1).strip()
+            nome = (antes_qualificacao[:part_match.start()] + " " + antes_qualificacao[part_match.end():]).strip()
+        else:
+            nome = antes_qualificacao.strip()
+
+        nome = re.sub(r"\s+", " ", nome).strip(" -\t")
+        if not nome or len(normalizar_nome_pessoa(nome).split()) < 2:
+            continue
+        if normalizar_nome_pessoa(nome) in {"NOME", "PARTICIPACAO QUALIFICACAO"}:
+            continue
+
+        registro = {
+            "documento": documento,
+            "nome": nome,
+            "qualificacao": qualificacao,
+            "participacao": participacao,
+            "data_ingresso": "",
+            "data_saida": "",
+        }
+        # Evita duplicatas caso o texto repita a mesma linha dentro da seção.
+        chave = (registro["documento"], normalizar_nome_pessoa(registro["nome"]))
+        if not any((s["documento"], normalizar_nome_pessoa(s["nome"])) == chave for s in socios):
+            socios.append(registro)
+
+    return socios
+
+
+def extrair_socios_legalizacao(texto):
+    """Extrai os registros da tabela Quadro Societário do Aprova/Legalização."""
+    socios = []
+    if not texto:
+        return socios
+
+    match = re.search(r"Quadro\s+Societ[aá]rio", texto, flags=re.IGNORECASE)
+    if not match:
+        return socios
+
+    bloco = texto[match.end():]
+    # A tabela é copiada normalmente em formato Markdown com colunas separadas por |.
+    for linha in bloco.splitlines():
+        linha = linha.strip()
+        if not linha or "|" not in linha:
+            # O quadro costuma ser a última seção; depois da tabela não precisamos
+            # procurar outras linhas do documento.
+            if socios:
+                break
+            continue
+
+        colunas = [c.strip() for c in linha.strip().strip("|").split("|")]
+        if len(colunas) < 3:
+            continue
+        cabecalho = normalizar_sem_acentos(" ".join(colunas))
+        if "CPF/CNPJ" in cabecalho and "NOME" in cabecalho:
+            continue
+        if all(not c or re.fullmatch(r"[:\-\s]+", c) for c in colunas):
+            continue
+
+        doc_texto = colunas[0]
+        # Remove link Markdown, por exemplo [194.169.638-44](https://...)
+        doc_match = re.search(
+            r"(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11}|\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14})",
+            doc_texto,
+        )
+        if not doc_match:
+            continue
+
+        documento = normalizar_documento_pessoa(doc_match.group(1))
+        nome = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", colunas[1]).strip()
+        qualificacao = colunas[2].strip() if len(colunas) > 2 else ""
+        data_ingresso = colunas[3].strip() if len(colunas) > 3 else ""
+        data_saida = colunas[4].strip() if len(colunas) > 4 else ""
+        if not nome or normalizar_nome_pessoa(nome) == "NOME":
+            continue
+
+        socios.append({
+            "documento": documento,
+            "nome": nome,
+            "qualificacao": qualificacao,
+            "participacao": "",
+            "data_ingresso": data_ingresso,
+            "data_saida": data_saida,
+        })
+
+    # Deduplica registros por documento e nome.
+    unicos = []
+    vistos = set()
+    for socio in socios:
+        chave = (socio["documento"], normalizar_nome_pessoa(socio["nome"]))
+        if chave not in vistos:
+            vistos.add(chave)
+            unicos.append(socio)
+    return unicos
+
+
+def comparar_socios(socios_cadastro, socios_legalizacao):
+    """Compara sócios por CPF/CNPJ e, como alternativa, pelo nome normalizado."""
+    cadastro_restantes = list(socios_cadastro or [])
+    legalizacao_restantes = list(socios_legalizacao or [])
+    linhas = []
+
+    while cadastro_restantes:
+        cadastro = cadastro_restantes.pop(0)
+        doc_c = cadastro.get("documento", "")
+        nome_c = normalizar_nome_pessoa(cadastro.get("nome", ""))
+
+        indice = next((i for i, item in enumerate(legalizacao_restantes)
+                       if doc_c and item.get("documento", "") == doc_c), None)
+        match_por_documento = indice is not None
+        if indice is None:
+            indice = next((i for i, item in enumerate(legalizacao_restantes)
+                           if nome_c and normalizar_nome_pessoa(item.get("nome", "")) == nome_c), None)
+
+        if indice is None:
+            linhas.append({
+                "CPF/CNPJ Cadastro": doc_c or "Não identificado",
+                "Nome no Cadastro": cadastro.get("nome", ""),
+                "Qualificação Cadastro": cadastro.get("qualificacao", ""),
+                "Participação Cadastro": cadastro.get("participacao", ""),
+                "CPF/CNPJ Legalização": "—",
+                "Nome na Legalização": "—",
+                "Qualificação Legalização": "—",
+                "Data ingresso": "—",
+                "Data saída": "—",
+                "Resultado": "🔴 Ausente na Legalização",
+            })
+            continue
+
+        legal = legalizacao_restantes.pop(indice)
+        doc_l = legal.get("documento", "")
+        nome_l = normalizar_nome_pessoa(legal.get("nome", ""))
+        qual_c = normalizar_sem_acentos(cadastro.get("qualificacao", ""))
+        qual_l = normalizar_sem_acentos(legal.get("qualificacao", ""))
+
+        problemas = []
+        if doc_c and doc_l and doc_c != doc_l:
+            problemas.append("CPF/CNPJ divergente")
+        if nome_c and nome_l and nome_c != nome_l:
+            problemas.append("nome divergente")
+        if qual_c and qual_l and qual_c != qual_l:
+            problemas.append("qualificação divergente")
+
+        if problemas:
+            resultado = "🟠 Conferir: " + "; ".join(problemas)
+        elif not doc_c or not doc_l:
+            resultado = "🟠 Correspondência parcial — documento ausente"
+        else:
+            resultado = "🟢 Correspondente"
+
+        linhas.append({
+            "CPF/CNPJ Cadastro": doc_c or "Não identificado",
+            "Nome no Cadastro": cadastro.get("nome", ""),
+            "Qualificação Cadastro": cadastro.get("qualificacao", ""),
+            "Participação Cadastro": cadastro.get("participacao", ""),
+            "CPF/CNPJ Legalização": doc_l or "Não identificado",
+            "Nome na Legalização": legal.get("nome", ""),
+            "Qualificação Legalização": legal.get("qualificacao", ""),
+            "Data ingresso": legal.get("data_ingresso", ""),
+            "Data saída": legal.get("data_saida", ""),
+            "Resultado": resultado,
+        })
+
+    for legal in legalizacao_restantes:
+        linhas.append({
+            "CPF/CNPJ Cadastro": "—",
+            "Nome no Cadastro": "—",
+            "Qualificação Cadastro": "—",
+            "Participação Cadastro": "—",
+            "CPF/CNPJ Legalização": legal.get("documento", "") or "Não identificado",
+            "Nome na Legalização": legal.get("nome", ""),
+            "Qualificação Legalização": legal.get("qualificacao", ""),
+            "Data ingresso": legal.get("data_ingresso", ""),
+            "Data saída": legal.get("data_saida", ""),
+            "Resultado": "🔴 Ausente no Cadastro Municipal",
+        })
+
+    return linhas
+
+
 def extrair_cadastro_municipal(
     texto
 ):
@@ -1968,6 +2217,54 @@ if analisar:
         )
 
         # ====================================================
+        # COMPARAÇÃO DO QUADRO SOCIETÁRIO
+        # ====================================================
+
+        st.divider()
+        st.header("👥 Comparação dos sócios e administradores")
+
+        socios_cadastro = extrair_socios_cadastro(texto_cadastro)
+        socios_legalizacao = extrair_socios_legalizacao(texto_legalizacao)
+        tabela_socios = comparar_socios(socios_cadastro, socios_legalizacao)
+
+        if not socios_cadastro and not socios_legalizacao:
+            st.warning(
+                "Não foi possível identificar o quadro societário em nenhum dos documentos. "
+                "Confira se o texto copiado inclui a seção 'Sócios' do Cadastro Municipal "
+                "e a tabela 'Quadro Societário' da Legalização."
+            )
+        else:
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1:
+                st.metric("Sócios no Cadastro Municipal", len(socios_cadastro))
+            with col_s2:
+                st.metric("Sócios na Legalização", len(socios_legalizacao))
+            with col_s3:
+                divergencias_socios = sum(
+                    1 for item in tabela_socios
+                    if item["Resultado"].startswith("🔴") or item["Resultado"].startswith("🟠")
+                )
+                st.metric("Itens para conferir", divergencias_socios)
+
+            if tabela_socios:
+                st.dataframe(
+                    tabela_socios,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            if socios_cadastro and socios_legalizacao and all(
+                item["Resultado"] == "🟢 Correspondente" for item in tabela_socios
+            ) and len(socios_cadastro) == len(socios_legalizacao):
+                st.success("🟢 Os sócios identificados coincidem entre os dois documentos.")
+            else:
+                st.warning(
+                    "Confira os resultados do quadro societário. A participação societária "
+                    "e as datas de ingresso/saída são exibidas quando disponíveis, mas não são "
+                    "consideradas divergência quando o campo não existe em um dos documentos."
+                )
+
+        # ====================================================
         # RESULTADO FINAL
         # ====================================================
 
@@ -2019,6 +2316,16 @@ if analisar:
             divergencias.append(
                 "CNAEs"
             )
+
+        # Sócios: inclui no resumo apenas quando houver ausência ou divergência.
+        if "tabela_socios" in locals() and tabela_socios:
+            if any(
+                item["Resultado"].startswith("🔴") or item["Resultado"].startswith("🟠")
+                for item in tabela_socios
+            ):
+                divergencias.append("Sócios/administradores")
+        elif not socios_cadastro and not socios_legalizacao:
+            pendencias.append("Quadro societário não identificado")
 
         if divergencias:
 
