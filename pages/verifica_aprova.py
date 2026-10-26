@@ -1,208 +1,119 @@
-import re
-import unicodedata
+    c2.write(valor_legalizacao or "Não identificado")
+    if not valor_cadastro or not valor_legalizacao:
+        c3.warning("Conferir")
+    elif not comparar or normalizar_comparacao(valor_cadastro) == normalizar_comparacao(valor_legalizacao):
+        c3.success("Coincide" if comparar else "Manual")
+    else:
+        c3.error("Diverge")
 
+# ============================================================
+# INTERFACE STREAMLIT
+# ============================================================
+st.title("Verifica preenchimento - Cadastro - Legalização")
+st.caption("Comparação do Extrato do Cadastro de Contribuinte Pessoa Jurídica com a Análise do Alvará do Aprova Digital.")
+st.info("Cole o texto completo de cada documento. A extração automática depende da estrutura do texto copiado; confira os campos marcados para revisão.")
 
-CPF_REGEX = r"\d{3}\.?\d{3}\.?\d{3}-?\d{2}"
-
-QUALIFICACOES = (
-    "SOCIO-ADMINISTRADOR",
-    "SÓCIO-ADMINISTRADOR",
-    "SOCIO ADMINISTRADOR",
-    "SÓCIO ADMINISTRADOR",
-    "ADMINISTRADOR",
-    "SOCIO",
-    "SÓCIO",
-    "RESPONSAVEL",
-    "RESPONSÁVEL",
-)
-
-
-def normalizar_texto_socio(texto):
-    """Padroniza texto para comparação, sem alterar a exibição original."""
-    texto = (texto or "").strip().upper()
-    texto = unicodedata.normalize("NFKD", texto)
-    texto = "".join(
-        c for c in texto
-        if not unicodedata.combining(c)
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("Cadastro Municipal")
+    texto_cadastro = st.text_area(
+        "Texto do Cadastro Municipal", height=380, key="texto_cadastro",
+        placeholder="Cole aqui o Extrato do Cadastro de Contribuinte Pessoa Jurídica...",
+        label_visibility="collapsed",
     )
-    texto = re.sub(r"\s+", " ", texto)
-    return texto.strip()
-
-
-def normalizar_cpf(cpf):
-    """Mantém somente os dígitos do CPF."""
-    return re.sub(r"\D", "", cpf or "")
-
-
-def extrair_registros_societarios(texto, documento):
-    """
-    Extrai CPF, nome e qualificação das seções societárias.
-
-    documento:
-      - 'cadastro': seções Sócios e Responsáveis
-      - 'legalizacao': seção Quadro Societário
-    """
-    if not texto:
-        return []
-
-    linhas = texto.replace("\r", "\n").split("\n")
-    registros = []
-    secoes_validas = (
-        {"sócios", "socios", "responsáveis", "responsaveis"}
-        if documento == "cadastro"
-        else {"quadro societário", "quadro societario"}
+with col2:
+    st.subheader("Legalização")
+    texto_legalizacao = st.text_area(
+        "Texto da Legalização", height=380, key="texto_legalizacao",
+        placeholder="Cole aqui o texto da Análise do Alvará do Aprova Digital...",
+        label_visibility="collapsed",
     )
 
-    secao_ativa = False
+b1, b2, _ = st.columns([1, 1, 4])
+with b1:
+    verificar = st.button("🔎 VERIFICAR", type="primary", use_container_width=True)
+with b2:
+    limpar = st.button("🧹 LIMPAR", use_container_width=True)
+if limpar:
+    st.session_state["texto_cadastro"] = ""
+    st.session_state["texto_legalizacao"] = ""
+    st.rerun()
 
-    for linha in linhas:
-        original = linha.strip()
-        if not original:
-            continue
+if verificar:
+    if not texto_cadastro.strip() or not texto_legalizacao.strip():
+        st.warning("Preencha os dois campos antes de verificar.")
+        st.stop()
 
-        linha_norm = normalizar_texto_socio(original)
+    cadastro = extrair_dados_cadastro(texto_cadastro)
+    legalizacao = extrair_dados_legalizacao(texto_legalizacao)
+    st.divider()
+    st.header("Resultado da comparação")
 
-        # Identifica o início e o fim das seções relevantes.
-        if documento == "cadastro":
-            if linha_norm in {"SOCIOS", "RESPONSAVEIS"}:
-                secao_ativa = True
-                continue
+    st.subheader("1. Identificação da empresa")
+    exibir_comparacao_campo("CNPJ", cadastro["cnpj"], legalizacao["cnpj"])
+    exibir_comparacao_campo("Razão social", cadastro["razao_social"], legalizacao["razao_social"])
+    exibir_comparacao_campo("Natureza jurídica", cadastro["natureza_juridica"], legalizacao["natureza_juridica"])
 
-            if secao_ativa and re.search(
-                r"ATIVIDADE ECONOMICA CNAE|IDENTIFICACAO DO CONTRIBUINTE",
-                linha_norm
-            ):
-                secao_ativa = False
-                continue
+    st.subheader("2. Endereço")
+    ec, el = cadastro["endereco"], legalizacao["endereco"]
+    for rotulo, chave in [("Logradouro", "logradouro"), ("Número", "numero"), ("Complemento", "complemento"), ("Bairro", "bairro"), ("CEP", "cep")]:
+        exibir_comparacao_campo(rotulo, ec.get(chave), el.get(chave), comparar=(chave != "complemento"))
+    if ec.get("logradouro") and ec.get("numero"):
+        endereco_maps = f'{ec["logradouro"]}, {ec["numero"]}, Itajaí - SC'
+        st.link_button("📍 Abrir endereço do Cadastro no Google Maps", "https://www.google.com/maps/search/?api=1&query=" + quote_plus(endereco_maps))
 
-        else:
-            if linha_norm == "QUADRO SOCIETARIO":
-                secao_ativa = True
-                continue
+    st.subheader("3. Comparação dos CNAEs")
+    cnaes_cad, cnaes_leg = set(cadastro["cnaes"]), set(legalizacao["cnaes"])
+    if cnaes_cad and cnaes_leg and cnaes_cad == cnaes_leg:
+        st.success("Os CNAEs identificados coincidem.")
+    elif not cnaes_cad or not cnaes_leg:
+        st.warning("Não foi possível identificar CNAEs em um dos documentos. Confira o texto extraído.")
+    else:
+        st.error("Há diferenças entre os CNAEs identificados.")
+    todos = sorted(cnaes_cad | cnaes_leg)
+    if todos:
+        st.dataframe(pd.DataFrame({
+            "CNAE": [formatar_cnae(x) for x in todos],
+            "Cadastro Municipal": ["✓" if x in cnaes_cad else "—" for x in todos],
+            "Legalização": ["✓" if x in cnaes_leg else "—" for x in todos],
+            "Resultado": ["Coincide" if x in cnaes_cad and x in cnaes_leg else "Somente em um documento" for x in todos],
+        }), use_container_width=True, hide_index=True)
 
-            if secao_ativa and linha_norm.startswith(
-                ("OBJETO SOCIAL", "OUTRAS INSTITUICOES",
-                 "INFORMACOES COMPLEMENTARES")
-            ):
-                secao_ativa = False
-                continue
+    st.subheader("4. Comparação de sócios e responsáveis")
+    socios = comparar_socios(texto_cadastro, texto_legalizacao)
+    n_correspondentes = len(socios["correspondentes"])
+    n_divergencias = len(socios["divergencias_nome"])
+    n_somente = len(socios["somente_cadastro"]) + len(socios["somente_legalizacao"])
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Correspondentes", n_correspondentes)
+    m2.metric("Divergências de nome", n_divergencias)
+    m3.metric("Não localizados no outro documento", n_somente)
 
-        if not secao_ativa:
-            continue
+    if not socios["cadastro"]:
+        st.warning("Não foi possível identificar sócios na seção 'Sócios' do Cadastro Municipal.")
+    if not socios["legalizacao"]:
+        st.warning("Não foi possível identificar sócios na seção 'Quadro Societário' da Legalização.")
 
-        # Localiza o CPF no registro.
-        match_cpf = re.search(CPF_REGEX, original)
-        if not match_cpf:
-            continue
+    if socios["correspondentes"]:
+        st.markdown("**🟢 Sócios correspondentes**")
+        st.dataframe(pd.DataFrame(socios["correspondentes"]), use_container_width=True, hide_index=True)
+    if socios["divergencias_nome"]:
+        st.markdown("**🔴 Mesmo CPF, mas nome divergente**")
+        st.dataframe(pd.DataFrame(socios["divergencias_nome"]), use_container_width=True, hide_index=True)
+    if socios["somente_cadastro"]:
+        st.markdown("**🟡 Encontrados somente no Cadastro Municipal**")
+        st.dataframe(pd.DataFrame([{"CPF": x["cpf"] or "Não identificado", "Nome": x["nome"], "Qualificação": x["qualificacao"] or "Não identificada"} for x in socios["somente_cadastro"]]), use_container_width=True, hide_index=True)
+    if socios["somente_legalizacao"]:
+        st.markdown("**🟡 Encontrados somente na Legalização**")
+        st.dataframe(pd.DataFrame([{"CPF": x["cpf"] or "Não identificado", "Nome": x["nome"], "Qualificação": x["qualificacao"] or "Não identificada"} for x in socios["somente_legalizacao"]]), use_container_width=True, hide_index=True)
+    if not socios["correspondentes"] and not socios["divergencias_nome"] and not n_somente:
+        st.info("Não há registros suficientes para concluir a comparação societária automaticamente.")
+    st.caption("A comparação utiliza o CPF como chave preferencial e o nome normalizado como conferência. A repetição do mesmo CPF em 'Sócios' e 'Responsáveis' no Cadastro Municipal é deduplicada.")
 
-        cpf = normalizar_cpf(match_cpf.group())
-        restante = original[match_cpf.end():].strip()
-
-        # Remove separadores de tabela.
-        restante = restante.strip("| \t")
-
-        # Retira a qualificação do final da linha, quando identificável.
-        qualificacao = ""
-        for qual in sorted(QUALIFICACOES, key=len, reverse=True):
-            padrao = re.compile(
-                re.escape(qual).replace(r"\-", r"[- ]"),
-                re.IGNORECASE
-            )
-            match_qual = padrao.search(restante)
-            if match_qual:
-                qualificacao = match_qual.group().strip()
-                restante = restante[:match_qual.start()].strip()
-                break
-
-        # No Cadastro Municipal, pode existir participação percentual
-        # entre o nome e a qualificação (ex.: nome + 100 + qualificação).
-        restante = re.sub(
-            r"\s+\d{1,3}(?:[,.]\d+)?\s*$",
-            "",
-            restante
-        ).strip()
-
-        nome = re.sub(r"^[|;\-\s]+|[|;\-\s]+$", "", restante)
-        nome = re.sub(r"\s+", " ", nome).strip()
-
-        # Evita registrar cabeçalhos ou linhas incompletas.
-        if len(nome.split()) < 2:
-            continue
-
-        registros.append({
-            "cpf": cpf,
-            "nome": nome,
-            "nome_normalizado": normalizar_texto_socio(nome),
-            "qualificacao": qualificacao,
+    with st.expander("🔧 Diagnóstico dos dados extraídos"):
+        st.json({
+            "cadastro": cadastro,
+            "legalizacao": legalizacao,
+            "socios_cadastro_extraidos": socios["cadastro"],
+            "socios_legalizacao_extraidos": socios["legalizacao"],
         })
-
-    return registros
-
-
-def comparar_socios_documentos(texto_cadastro, texto_legalizacao):
-    cadastro = extrair_registros_societarios(
-        texto_cadastro, "cadastro"
-    )
-    legalizacao = extrair_registros_societarios(
-        texto_legalizacao, "legalizacao"
-    )
-
-    # Deduplica o mesmo CPF dentro de cada documento.
-    # Isso evita contar duas vezes quem aparece em Sócios e Responsáveis.
-    def deduplicar(registros):
-        resultado = {}
-        sem_cpf = []
-
-        for registro in registros:
-            cpf = registro["cpf"]
-
-            if cpf:
-                if cpf not in resultado:
-                    resultado[cpf] = registro
-            else:
-                sem_cpf.append(registro)
-
-        return resultado, sem_cpf
-
-    cad_por_cpf, cad_sem_cpf = deduplicar(cadastro)
-    leg_por_cpf, leg_sem_cpf = deduplicar(legalizacao)
-
-    correspondentes = []
-    divergencias_nome = []
-    somente_cadastro = []
-    somente_legalizacao = []
-
-    # CPF igual: mesma pessoa identificada; comparar o nome.
-    for cpf in cad_por_cpf.keys() & leg_por_cpf.keys():
-        c = cad_por_cpf[cpf]
-        l = leg_por_cpf[cpf]
-
-        item = {
-            "cpf": cpf,
-            "nome_cadastro": c["nome"],
-            "nome_legalizacao": l["nome"],
-            "qualificacao_cadastro": c["qualificacao"],
-            "qualificacao_legalizacao": l["qualificacao"],
-        }
-
-        if c["nome_normalizado"] == l["nome_normalizado"]:
-            correspondentes.append(item)
-        else:
-            divergencias_nome.append(item)
-
-    for cpf in cad_por_cpf.keys() - leg_por_cpf.keys():
-        somente_cadastro.append(cad_por_cpf[cpf])
-
-    for cpf in leg_por_cpf.keys() - cad_por_cpf.keys():
-        somente_legalizacao.append(leg_por_cpf[cpf])
-
-    return {
-        "cadastro": list(cad_por_cpf.values()),
-        "legalizacao": list(leg_por_cpf.values()),
-        "correspondentes": correspondentes,
-        "divergencias_nome": divergencias_nome,
-        "somente_cadastro": somente_cadastro,
-        "somente_legalizacao": somente_legalizacao,
-        "cadastro_sem_cpf": cad_sem_cpf,
-        "legalizacao_sem_cpf": leg_sem_cpf,
-    }
