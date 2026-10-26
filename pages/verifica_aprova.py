@@ -1,119 +1,96 @@
-    c2.write(valor_legalizacao or "Não identificado")
-    if not valor_cadastro or not valor_legalizacao:
-        c3.warning("Conferir")
-    elif not comparar or normalizar_comparacao(valor_cadastro) == normalizar_comparacao(valor_legalizacao):
-        c3.success("Coincide" if comparar else "Manual")
-    else:
-        c3.error("Diverge")
+import re
+import unicodedata
+import pandas as pd
+import streamlit as st
+from urllib.parse import quote_plus
+
+st.set_page_config(
+    page_title="Verifica preenchimento - Cadastro - Legalização",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 # ============================================================
-# INTERFACE STREAMLIT
+# FUNÇÕES DE NORMALIZAÇÃO
 # ============================================================
-st.title("Verifica preenchimento - Cadastro - Legalização")
-st.caption("Comparação do Extrato do Cadastro de Contribuinte Pessoa Jurídica com a Análise do Alvará do Aprova Digital.")
-st.info("Cole o texto completo de cada documento. A extração automática depende da estrutura do texto copiado; confira os campos marcados para revisão.")
+def limpar_texto(texto):
+    return (texto or "").replace("\xa0", " ").replace("\r", "\n")
 
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("Cadastro Municipal")
-    texto_cadastro = st.text_area(
-        "Texto do Cadastro Municipal", height=380, key="texto_cadastro",
-        placeholder="Cole aqui o Extrato do Cadastro de Contribuinte Pessoa Jurídica...",
-        label_visibility="collapsed",
-    )
-with col2:
-    st.subheader("Legalização")
-    texto_legalizacao = st.text_area(
-        "Texto da Legalização", height=380, key="texto_legalizacao",
-        placeholder="Cole aqui o texto da Análise do Alvará do Aprova Digital...",
-        label_visibility="collapsed",
-    )
 
-b1, b2, _ = st.columns([1, 1, 4])
-with b1:
-    verificar = st.button("🔎 VERIFICAR", type="primary", use_container_width=True)
-with b2:
-    limpar = st.button("🧹 LIMPAR", use_container_width=True)
-if limpar:
-    st.session_state["texto_cadastro"] = ""
-    st.session_state["texto_legalizacao"] = ""
-    st.rerun()
+def normalizar_espacos(texto):
+    return re.sub(r"\s+", " ", limpar_texto(texto)).strip()
 
-if verificar:
-    if not texto_cadastro.strip() or not texto_legalizacao.strip():
-        st.warning("Preencha os dois campos antes de verificar.")
-        st.stop()
 
-    cadastro = extrair_dados_cadastro(texto_cadastro)
-    legalizacao = extrair_dados_legalizacao(texto_legalizacao)
-    st.divider()
-    st.header("Resultado da comparação")
+def normalizar_comparacao(texto):
+    texto = normalizar_espacos(texto).upper()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return re.sub(r"[^A-Z0-9]", "", texto)
 
-    st.subheader("1. Identificação da empresa")
-    exibir_comparacao_campo("CNPJ", cadastro["cnpj"], legalizacao["cnpj"])
-    exibir_comparacao_campo("Razão social", cadastro["razao_social"], legalizacao["razao_social"])
-    exibir_comparacao_campo("Natureza jurídica", cadastro["natureza_juridica"], legalizacao["natureza_juridica"])
 
-    st.subheader("2. Endereço")
-    ec, el = cadastro["endereco"], legalizacao["endereco"]
-    for rotulo, chave in [("Logradouro", "logradouro"), ("Número", "numero"), ("Complemento", "complemento"), ("Bairro", "bairro"), ("CEP", "cep")]:
-        exibir_comparacao_campo(rotulo, ec.get(chave), el.get(chave), comparar=(chave != "complemento"))
-    if ec.get("logradouro") and ec.get("numero"):
-        endereco_maps = f'{ec["logradouro"]}, {ec["numero"]}, Itajaí - SC'
-        st.link_button("📍 Abrir endereço do Cadastro no Google Maps", "https://www.google.com/maps/search/?api=1&query=" + quote_plus(endereco_maps))
+def somente_digitos(texto):
+    return re.sub(r"\D", "", texto or "")
 
-    st.subheader("3. Comparação dos CNAEs")
-    cnaes_cad, cnaes_leg = set(cadastro["cnaes"]), set(legalizacao["cnaes"])
-    if cnaes_cad and cnaes_leg and cnaes_cad == cnaes_leg:
-        st.success("Os CNAEs identificados coincidem.")
-    elif not cnaes_cad or not cnaes_leg:
-        st.warning("Não foi possível identificar CNAEs em um dos documentos. Confira o texto extraído.")
-    else:
-        st.error("Há diferenças entre os CNAEs identificados.")
-    todos = sorted(cnaes_cad | cnaes_leg)
-    if todos:
-        st.dataframe(pd.DataFrame({
-            "CNAE": [formatar_cnae(x) for x in todos],
-            "Cadastro Municipal": ["✓" if x in cnaes_cad else "—" for x in todos],
-            "Legalização": ["✓" if x in cnaes_leg else "—" for x in todos],
-            "Resultado": ["Coincide" if x in cnaes_cad and x in cnaes_leg else "Somente em um documento" for x in todos],
-        }), use_container_width=True, hide_index=True)
 
-    st.subheader("4. Comparação de sócios e responsáveis")
-    socios = comparar_socios(texto_cadastro, texto_legalizacao)
-    n_correspondentes = len(socios["correspondentes"])
-    n_divergencias = len(socios["divergencias_nome"])
-    n_somente = len(socios["somente_cadastro"]) + len(socios["somente_legalizacao"])
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Correspondentes", n_correspondentes)
-    m2.metric("Divergências de nome", n_divergencias)
-    m3.metric("Não localizados no outro documento", n_somente)
+def extrair_cnpj(texto):
+    m = re.search(r"(?<!\d)(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})(?!\d)", texto or "")
+    if m:
+        return m.group(1)
+    m = re.search(r"(?<!\d)(\d{14})(?!\d)", texto or "")
+    if m:
+        n = m.group(1)
+        return f"{n[:2]}.{n[2:5]}.{n[5:8]}/{n[8:12]}-{n[12:]}"
+    return None
 
-    if not socios["cadastro"]:
-        st.warning("Não foi possível identificar sócios na seção 'Sócios' do Cadastro Municipal.")
-    if not socios["legalizacao"]:
-        st.warning("Não foi possível identificar sócios na seção 'Quadro Societário' da Legalização.")
 
-    if socios["correspondentes"]:
-        st.markdown("**🟢 Sócios correspondentes**")
-        st.dataframe(pd.DataFrame(socios["correspondentes"]), use_container_width=True, hide_index=True)
-    if socios["divergencias_nome"]:
-        st.markdown("**🔴 Mesmo CPF, mas nome divergente**")
-        st.dataframe(pd.DataFrame(socios["divergencias_nome"]), use_container_width=True, hide_index=True)
-    if socios["somente_cadastro"]:
-        st.markdown("**🟡 Encontrados somente no Cadastro Municipal**")
-        st.dataframe(pd.DataFrame([{"CPF": x["cpf"] or "Não identificado", "Nome": x["nome"], "Qualificação": x["qualificacao"] or "Não identificada"} for x in socios["somente_cadastro"]]), use_container_width=True, hide_index=True)
-    if socios["somente_legalizacao"]:
-        st.markdown("**🟡 Encontrados somente na Legalização**")
-        st.dataframe(pd.DataFrame([{"CPF": x["cpf"] or "Não identificado", "Nome": x["nome"], "Qualificação": x["qualificacao"] or "Não identificada"} for x in socios["somente_legalizacao"]]), use_container_width=True, hide_index=True)
-    if not socios["correspondentes"] and not socios["divergencias_nome"] and not n_somente:
-        st.info("Não há registros suficientes para concluir a comparação societária automaticamente.")
-    st.caption("A comparação utiliza o CPF como chave preferencial e o nome normalizado como conferência. A repetição do mesmo CPF em 'Sócios' e 'Responsáveis' no Cadastro Municipal é deduplicada.")
+def extrair_cep(texto):
+    # Prefere CEP de endereço do contribuinte; exclui CEP do cabeçalho municipal quando possível.
+    linhas = [normalizar_espacos(x) for x in limpar_texto(texto).splitlines() if normalizar_espacos(x)]
+    candidatos = []
+    for i, linha in enumerate(linhas):
+        m = re.search(r"\b(\d{2}\.?\d{3}-?\d{3})\b", linha)
+        if not m:
+            continue
+        cep = re.sub(r"\D", "", m.group(1))
+        if len(cep) == 8:
+            contexto = " ".join(linhas[max(0, i-2):min(len(linhas), i+2)]).upper()
+            prioridade = 3 if "CEP:" in linha.upper() else 1
+            if "RUA ALBERTO WERNER" in contexto or "SECRETARIA MUNICIPAL" in contexto:
+                prioridade -= 3
+            candidatos.append((prioridade, cep))
+    if candidatos:
+        cep = sorted(candidatos, key=lambda x: x[0], reverse=True)[0][1]
+        return f"{cep[:5]}-{cep[5:]}"
+    return None
 
-    with st.expander("🔧 Diagnóstico dos dados extraídos"):
-        st.json({
-            "cadastro": cadastro,
-            "legalizacao": legalizacao,
-            "socios_cadastro_extraidos": socios["cadastro"],
-            "socios_legalizacao_extraidos": socios["legalizacao"],
-        })
+
+def extrair_cnaes(texto):
+    """Extrai CNAEs tanto em formato 46.87-7/01 como em formato 4687701."""
+    texto = limpar_texto(texto)
+    encontrados = set()
+    # Formato com pontuação: 46.87-7/01 ou 49.30-2/02
+    for m in re.finditer(r"(?<!\d)(\d{2})\.(\d{2})-(\d)/(\d{2})(?!\d)", texto):
+        encontrados.add("".join(m.groups()))
+    # Código de sete dígitos em linhas de atividade, evitando números de endereço/CEP.
+    for linha in texto.splitlines():
+        ln = normalizar_espacos(linha)
+        if not ln:
+            continue
+        if re.search(r"CNAE|ATIVIDADE|COMERCIO|COMÉRCIO|TRANSPORTE|SERVIÇOS|SERVICOS", ln, re.I):
+            for m in re.finditer(r"(?<!\d)(\d{7})(?!\d)", ln):
+                encontrados.add(m.group(1))
+        # Cadastro municipal pode pôr código e atividade em linhas separadas.
+        elif re.fullmatch(r"\d{7}", ln):
+            encontrados.add(ln)
+    return sorted(encontrados)
+
+
+def formatar_cnae(codigo):
+    c = somente_digitos(codigo)
+    if len(c) != 7:
+        return codigo
+    return f"{c[:2]}.{c[2:4]}-{c[4]}/{c[5:]}"
+
+
+def obter_valor_rotulo(texto, rotulos, max_chars=160):
+    """Procura rótulos no texto em formato 'Rótulo: valor' ou 'Rótulo valor'."""
