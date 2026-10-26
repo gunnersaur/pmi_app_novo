@@ -920,56 +920,39 @@ def extrair_socios_cadastro(texto):
 
 
 def extrair_socios_legalizacao(texto):
-    """Extrai sócios do Quadro Societário da Legalização/Aprova Digital.
-
-    Aceita tabela Markdown copiada do navegador, links Markdown no CPF,
-    asteriscos de negrito, barras invertidas no fim das linhas e quebras
-    de linha variadas. Deduplica pelo documento e nome.
-    """
+    """Extrai os registros da tabela Quadro Societário do Aprova/Legalização."""
     socios = []
     if not texto:
         return socios
 
-    texto = str(texto).replace("\r", "\n")
-    texto = re.sub(r"\\\s*\n", "\n", texto)  # remove continuadores '\' no fim da linha
-    texto = texto.replace("&#x20;", " ").replace("&nbsp;", " ")
-
-    match = re.search(
-        r"Quadro\s+Societ[aá]rio",
-        texto,
-        flags=re.IGNORECASE
-    )
+    match = re.search(r"Quadro\s+Societ[aá]rio", texto, flags=re.IGNORECASE)
     if not match:
         return socios
 
     bloco = texto[match.end():]
-    # A tabela costuma vir como Markdown: | CPF/CNPJ | Nome | Qualificação | ... |
+    # A tabela é copiada normalmente em formato Markdown com colunas separadas por |.
     for linha in bloco.splitlines():
-        linha = linha.strip().rstrip("\\").strip()
-        if not linha:
-            if socios:
-                break
-            continue
-        if "|" not in linha:
+        linha = linha.strip()
+        if not linha or "|" not in linha:
+            # O quadro costuma ser a última seção; depois da tabela não precisamos
+            # procurar outras linhas do documento.
             if socios:
                 break
             continue
 
         colunas = [c.strip() for c in linha.strip().strip("|").split("|")]
-        colunas = [re.sub(r"\*\*", "", c).strip() for c in colunas]
+        if len(colunas) < 3:
+            continue
         cabecalho = normalizar_sem_acentos(" ".join(colunas))
         if "CPF/CNPJ" in cabecalho and "NOME" in cabecalho:
             continue
         if all(not c or re.fullmatch(r"[:\-\s]+", c) for c in colunas):
             continue
-        if len(colunas) < 3:
-            continue
 
         doc_texto = colunas[0]
-        # Captura CPF/CNPJ tanto em texto simples quanto em [CPF](URL).
+        # Remove link Markdown, por exemplo [194.169.638-44](https://...)
         doc_match = re.search(
-            r"(?<!\d)(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11}|"
-            r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14})(?!\d)",
+            r"(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11}|\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14})",
             doc_texto,
         )
         if not doc_match:
@@ -977,15 +960,10 @@ def extrair_socios_legalizacao(texto):
 
         documento = normalizar_documento_pessoa(doc_match.group(1))
         nome = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", colunas[1]).strip()
-        nome = re.sub(r"\*", "", nome).strip()
         qualificacao = colunas[2].strip() if len(colunas) > 2 else ""
         data_ingresso = colunas[3].strip() if len(colunas) > 3 else ""
         data_saida = colunas[4].strip() if len(colunas) > 4 else ""
-
-        if not nome or normalizar_nome_pessoa(nome) in {"NOME", ""}:
-            continue
-        # Evita que títulos ou linhas de orientação sejam interpretados como sócios.
-        if "VER TIPOS DE UNIDADE" in normalizar_sem_acentos(nome):
+        if not nome or normalizar_nome_pessoa(nome) == "NOME":
             continue
 
         socios.append({
@@ -997,57 +975,7 @@ def extrair_socios_legalizacao(texto):
             "data_saida": data_saida,
         })
 
-    # Fallback para texto convertido sem delimitadores de tabela: procura CPF,
-    # nome e qualificação na mesma linha, quando o navegador achatou a tabela.
-    if not socios:
-        linhas = [re.sub(r"\\\s*$", "", x).strip() for x in texto[match.end():].splitlines()]
-        for i, linha in enumerate(linhas):
-            doc_match = re.search(
-                r"(?<!\d)(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11}|"
-                r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14})(?!\d)",
-                linha,
-            )
-            if not doc_match:
-                continue
-            # Em texto simples, a tabela pode estar dividida em linhas/colunas.
-            trecho = " ".join(linhas[i:i + 8])
-            doc_match_trecho = re.search(
-                r"(?<!\d)(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11}|"
-                r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14})(?!\d)",
-                trecho,
-            )
-            if not doc_match_trecho:
-                continue
-            pos = trecho.find(doc_match_trecho.group(1)) + len(doc_match_trecho.group(1))
-            depois = trecho[pos:]
-            qual_match = re.search(
-                r"(S[ÓO]CIO[- ]ADMINISTRADOR|S[ÓO]CIA[- ]ADMINISTRADORA|"
-                r"ADMINISTRADOR|ADMINISTRADORA|S[ÓO]CIO|S[ÓO]CIA|TITULAR)",
-                depois,
-                flags=re.IGNORECASE,
-            )
-            if not qual_match:
-                continue
-            antes_qual = depois[:qual_match.start()].strip(" |\t:-")
-            # Remove datas que possam ter sido capturadas junto ao nome.
-            antes_qual = re.sub(r"\b\d{2}/\d{2}/\d{4}\b", " ", antes_qual)
-            nome_candidatos = re.findall(
-                r"[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ'’-]+(?:\s+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ'’-]+){1,}",
-                antes_qual,
-                flags=re.IGNORECASE,
-            )
-            if not nome_candidatos:
-                continue
-            nome = nome_candidatos[-1].strip()
-            socios.append({
-                "documento": normalizar_documento_pessoa(doc_match_trecho.group(1)),
-                "nome": nome,
-                "qualificacao": qual_match.group(1).strip(),
-                "participacao": "",
-                "data_ingresso": "",
-                "data_saida": "",
-            })
-
+    # Deduplica registros por documento e nome.
     unicos = []
     vistos = set()
     for socio in socios:
@@ -2324,14 +2252,6 @@ if analisar:
                     use_container_width=True,
                     hide_index=True,
                 )
-
-            # Diagnóstico útil quando uma das extrações não reconhece a tabela.
-            if not socios_legalizacao or not socios_cadastro:
-                with st.expander("🔧 Diagnóstico da extração dos sócios"):
-                    st.write("**Registros extraídos do Cadastro Municipal**")
-                    st.json(socios_cadastro)
-                    st.write("**Registros extraídos da Legalização**")
-                    st.json(socios_legalizacao)
 
             if socios_cadastro and socios_legalizacao and all(
                 item["Resultado"] == "🟢 Correspondente" for item in tabela_socios
