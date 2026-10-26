@@ -1,96 +1,140 @@
-import pandas as pd
-import numpy as np
-import streamlit as st
 import re
-import os
+import unicodedata
 
-# Configurações do Streamlit
-st.set_page_config(
-    page_title='Verifica preenchimento - JUCESC vs Extrato - Itajaí', 
-    layout="centered", 
-    initial_sidebar_state='expanded',
-    menu_items=None
-)
 
-st.subheader('Verificação de Processo JUCESC x Extrato Econômico')
+def normalizar_nome_socio(nome):
+    """Normaliza o nome para comparação, preservando o original para exibição."""
+    if not nome:
+        return ""
 
-# Entradas de texto para colar o conteúdo dos arquivos
-ib_prefeitura = st.text_input(
-    "Cole todo o texto da página de detalhes do Processo (Prefeitura / JUCESC)",
-    key="ib_prefeitura"
-)
+    nome = nome.strip().upper()
+    nome = unicodedata.normalize("NFKD", nome)
+    nome = "".join(
+        caractere
+        for caractere in nome
+        if not unicodedata.combining(caractere)
+    )
+    nome = re.sub(r"\s+", " ", nome)
+    nome = re.sub(r"[^\w\s]", "", nome)
 
-ib_extrato = st.text_input(
-    "Cole todo o texto do Extrato do Cadastro Econômico",
-    key="ib_extrato"
-)
+    return nome.strip()
 
-# Botão limpar
-def clear_text():
-    st.session_state["ib_prefeitura"] = ""
-    st.session_state["ib_extrato"] = ""
 
-st.button("Limpar", on_click=clear_text)
+def extrair_socios_cadastro(texto):
+    """
+    Extrai nomes do bloco Sócios / Responsáveis do Cadastro Municipal.
+    Aceita formatos em linhas ou tabelas com separadores.
+    """
+    if not texto:
+        return []
 
-# Análise e cruzamento dos dados
-try:
-    if ib_prefeitura and ib_extrato != "":
+    inicio = re.search(
+        r"S[oó]cios?\s*/?\s*Respons[aá]veis",
+        texto,
+        flags=re.IGNORECASE
+    )
 
-        # -------------------------------------------------------------
-        # 1. Extração de Informações do Processo (Prefeitura / JUCESC)
-        # -------------------------------------------------------------
-        cnpj_pref = re.findall(r'\d\d.\d\d\d.\d\d\d/\d\d\d\d-\d\d', ib_prefeitura)
-        
-        # Extração de Nome Empresarial na Prefeitura
-        texto_pref_split = re.sub(' +', ' ', ib_prefeitura).split(' ')
-        try:
-            idx_nome1 = texto_pref_split.index('Empresarial:') + 1
-            idx_nome2 = texto_pref_split.index('Nome') # ou próximo campo delimitador
-            razao_social_pref = " ".join(texto_pref_split[idx_nome1:idx_nome2]).strip()
-        except:
-            razao_social_pref = "IMEBRA S.A." # Fallback baseada no documento padrão
+    if not inicio:
+        return []
 
-        # Extração de Endereço da Prefeitura
-        cnaes_pref = re.findall(r'\d\D\d\d-\d-\d\d|\d{7}', ib_prefeitura) # Ajuste conforme padrão de CNAE/Atividade
+    restante = texto[inicio.end():]
 
-        # -------------------------------------------------------------
-        # 2. Extração de Informações do Extrato Econômico
-        # -------------------------------------------------------------
-        cnpj_extrato = re.findall(r'\d\d.\d\d\d.\d\d\d/\d\d\d\d-\d\d', ib_extrato)
-        cnaes_extrato = re.findall(r'\d{7}', ib_extrato) # CNAEs no extrato costumam vir em códigos de 7 dígitos (ex: 4693100)
-        cnaes_extrato = list(set(cnaes_extrato))
+    fim = re.search(
+        r"Atividade\s+Econ[oô]mica\s+CNAE|"
+        r"Identifica[cç][aã]o\s+do\s+Contribuinte",
+        restante,
+        flags=re.IGNORECASE
+    )
 
-        # -------------------------------------------------------------
-        # 3. Impressão das Verificações e Resumo
-        # -------------------------------------------------------------
-        st.divider()
-        st.subheader('Resumo da Comparação')
-        
-        if cnpj_pref and cnpj_extrato:
-            st.markdown(f'**CNPJ Identificado:** {cnpj_extrato[0]}')
-        
-        # --- Verificação do CNPJ ---
-        st.subheader('Verificação do CNPJ')
-        if cnpj_pref and cnpj_extrato and (cnpj_pref[0] == cnpj_extrato[0]):
-            st.markdown(':green[Ok! O número do CNPJ coincide entre a JUCESC e o Extrato Econômico.]')
-        else:
-            st.markdown(':red[VERIFICAR! O número do CNPJ NÃO coincide.]')
+    bloco = restante[:fim.start()] if fim else restante[:3000]
 
-        # --- Verificação da Razão Social ---
-        st.subheader('Verificação da Razão Social / Nome')
-        # Limpeza simples para comparação
-        st.markdown(f'Processo JUCESC: **{razao_social_pref}**')
-        st.markdown(':green[Ok! Verifique visualmente se o nome empresarial confere com o extrato.]')
+    nomes = []
 
-        # --- Verificação de Atividades (CNAEs) ---
-        st.subheader('Verificação de CNAEs / Atividades')
-        if len(cnaes_extrato) > 0:
-            st.markdown(f':blue[Total de CNAEs identificados no Extrato Econômico:] {len(cnaes_extrato)}')
-            tabela_cnaes = pd.DataFrame({'CNAEs Encontrados no Extrato': cnaes_extrato})
-            st.dataframe(tabela_cnaes)
-        else:
-            st.markdown(':orange[Nenhum CNAE padronizado detectado automaticamente no texto do extrato. Verifique o formato.]')
+    for linha in bloco.splitlines():
+        linha = linha.strip()
 
-except Exception as e:
-    st.markdown(':red[Verifique o correto preenchimento de todos os campos de texto.]')
-    # st.write(f"Detalhe técnico do erro: {e}") # Descomente caso queira depurar eventuais exceções de índice
+        if not linha:
+            continue
+
+        # Se houver cabeçalhos de tabela, não os trata como nomes.
+        if re.search(
+            r"^(CPF|CNPJ|NOME|S[ÓO]CIO|RESPONS[ÁA]VEL|"
+            r"DOCUMENTO|QUALIFICA[ÇC][ÃA]O)\s*$",
+            linha,
+            flags=re.IGNORECASE
+        ):
+            continue
+
+        # Divide linhas de tabelas que usam pipes.
+        partes = [p.strip() for p in linha.split("|")]
+
+        for parte in partes:
+            parte = re.sub(r"\s+", " ", parte).strip(" -\t")
+
+            # Ignora campos que não parecem nomes.
+            if not parte or re.fullmatch(r"[\d./-]+", parte):
+                continue
+
+            if re.search(
+                r"^(CPF|CNPJ|NOME|S[ÓO]CIO|RESPONS[ÁA]VEL|"
+                r"DOCUMENTO|QUALIFICA[ÇC][ÃA]O|PESSOA F[ÍI]SICA)$",
+                parte,
+                flags=re.IGNORECASE
+            ):
+                continue
+
+            if re.search(r"\d{3}\.\d{3}\.\d{3}-\d{2}", parte):
+                parte = re.sub(
+                    r"\d{3}\.\d{3}\.\d{3}-\d{2}", "", parte
+                ).strip(" -")
+
+            # Evita registrar trechos longos que não sejam nomes.
+            if (
+                len(parte) <= 100
+                and re.search(r"[A-Za-zÀ-ÿ]", parte)
+                and len(normalizar_nome_socio(parte).split()) >= 2
+            ):
+                if normalizar_nome_socio(parte) not in {
+                    normalizar_nome_socio(n) for n in nomes
+                }:
+                    nomes.append(parte)
+
+    return nomes
+
+
+def comparar_socios(socios_cadastro, socios_legalizacao):
+    """Compara os nomes sem depender da ordem em que aparecem."""
+    cadastro_normalizado = {
+        normalizar_nome_socio(nome): nome
+        for nome in socios_cadastro
+        if normalizar_nome_socio(nome)
+    }
+
+    legalizacao_normalizado = {
+        normalizar_nome_socio(nome): nome
+        for nome in socios_legalizacao
+        if normalizar_nome_socio(nome)
+    }
+
+    em_comum = sorted(
+        set(cadastro_normalizado) & set(legalizacao_normalizado)
+    )
+    somente_cadastro = sorted(
+        set(cadastro_normalizado) - set(legalizacao_normalizado)
+    )
+    somente_legalizacao = sorted(
+        set(legalizacao_normalizado) - set(cadastro_normalizado)
+    )
+
+    return {
+        "em_comum": [
+            cadastro_normalizado[nome] for nome in em_comum
+        ],
+        "somente_cadastro": [
+            cadastro_normalizado[nome] for nome in somente_cadastro
+        ],
+        "somente_legalizacao": [
+            legalizacao_normalizado[nome]
+            for nome in somente_legalizacao
+        ],
+    }
