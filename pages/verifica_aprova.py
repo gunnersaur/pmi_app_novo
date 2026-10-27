@@ -418,8 +418,10 @@ def extrair_endereco_cadastro(
             match.group(1).strip()
         )
 
+    # O valor do número pode estar na mesma linha de Complemento,
+    # Bairro ou CEP. Interrompe a captura antes do próximo rótulo.
     match = re.search(
-        r"N[úu]mero\s*:\s*([^\n\r|]+)",
+        r"N[úu]mero\s*:\s*(.*?)(?=\s+(?:Complemento|Bairro|CEP|Logradouro)\s*:|[\n\r|]|$)",
         bloco,
         flags=re.IGNORECASE
     )
