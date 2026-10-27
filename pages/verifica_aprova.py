@@ -1006,9 +1006,7 @@ def extrair_cadastro_municipal(
     }
 
     if not texto:
-        dados["socios"] = extrair_socios_cadastro(texto)
-
-    return dados
+        return dados
 
     # --------------------------------------------------------
     # CNPJ
@@ -1184,6 +1182,9 @@ def extrair_cadastro_municipal(
         )
     )
 
+    # Quadro societário do Cadastro Municipal
+    dados["socios"] = extrair_socios_cadastro(texto)
+
     return dados
 
 
@@ -1211,9 +1212,7 @@ def extrair_legalizacao(
     }
 
     if not texto:
-        dados["socios"] = extrair_socios_legalizacao(texto)
-
-    return dados
+        return dados
 
     # --------------------------------------------------------
     # CNPJ
@@ -1432,6 +1431,9 @@ def extrair_legalizacao(
             dados["cnaes"].append(
                 cnae
             )
+
+    # Quadro societário do Aprova Digital
+    dados["socios"] = extrair_socios_legalizacao(texto)
 
     return dados
 
