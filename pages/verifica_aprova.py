@@ -2110,3 +2110,4 @@ if analisar:
             st.write(
                 "**CEP extraído do Cadastro:**",
                 cadastro["cep"]
+            )
